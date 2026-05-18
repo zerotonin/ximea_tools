@@ -32,12 +32,14 @@ napoleon_numpy_docstring = False
 
 autodoc_mock_imports = [
     "cv2",
-    "ximea",
-    "xiapi",
+    "matplotlib",
+    "numpy",
     "PyQt5",
     "serial",
+    "tomli_w",
     "tqdm",
-    "numpy",
+    "ximea",
+    "xiapi",
 ]
 
 intersphinx_mapping = {
