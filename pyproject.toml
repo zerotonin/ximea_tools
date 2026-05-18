@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ximea_tools"
+dynamic = ["version"]
+description = "Linux toolbox for XIMEA industrial cameras — recorder, PyQt5 GUI, and CueWire hardware-trigger integration."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Bart R.H. Geurten", email = "bart.geurten@gmail.com"},
+]
+keywords = [
+    "ximea",
+    "camera",
+    "machine-vision",
+    "pyqt5",
+    "recording",
+    "research-software",
+    "behavioural-biology",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video :: Capture",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "PyQt5>=5.15",
+    "pyserial>=3.5",
+    "tomli-w>=1.0",
+    "tqdm>=4.65",
+]
+# NOTE: the `ximea` Python module is installed by the XIMEA Linux SDK
+# system installer, not by pip. See README for installation instructions.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-qt>=4.2",
+    "ruff>=0.5",
+]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/zerotonin/ximea_tools"
+Source = "https://github.com/zerotonin/ximea_tools"
+Issues = "https://github.com/zerotonin/ximea_tools/issues"
+
+# CLI entry points are added in subsequent sprints:
+#   v0.2 — ximea-record  (Sprint 2)
+#   v0.3 — ximea-gui     (Sprint 3)
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+version_file = "src/ximea_tools/_version.py"
+fallback_version = "0.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]  # line length already enforced by formatter

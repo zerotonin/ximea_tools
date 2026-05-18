@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "ximea_tools"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - family-names: "Geurten"
+    given-names: "Bart R.H."
+    orcid: "https://orcid.org/0000-0002-1816-3241"
+    affiliation: "Department of Zoology, University of Otago, Dunedin, New Zealand"
+version: "0.1.0"
+date-released: "2026-05-18"
+license: MIT
+repository-code: "https://github.com/zerotonin/ximea_tools"
+abstract: >
+  Linux toolbox for XIMEA industrial cameras: a high-throughput recorder,
+  a PyQt5 graphical interface, and an integration with external hardware
+  triggers via the CueWire protocol.
+keywords:
+  - "XIMEA"
+  - "industrial camera"
+  - "machine vision"
+  - "behavioural recording"
+  - "PyQt5"
+  - "research software"
