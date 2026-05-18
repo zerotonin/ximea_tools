@@ -63,9 +63,9 @@ Homepage = "https://github.com/zerotonin/ximea_tools"
 Source = "https://github.com/zerotonin/ximea_tools"
 Issues = "https://github.com/zerotonin/ximea_tools/issues"
 
-# CLI entry points are added in subsequent sprints:
-#   v0.2 — ximea-record  (Sprint 2)
-#   v0.3 — ximea-gui     (Sprint 3)
+[project.scripts]
+ximea-record = "ximea_tools.cli:main"
+# ximea-gui will be added in Sprint 3.
 
 [tool.setuptools.packages.find]
 where = ["src"]
