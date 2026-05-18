@@ -124,6 +124,19 @@ class XimeaCamera:
         h = int(self._cam.get_height())
         return (h, w)
 
+    # ─── live setters (no restart required) ───────────────────────
+    def set_exposure(self, us: int) -> None:
+        if self._cam is not None:
+            self._cam.set_exposure(us)
+
+    def set_framerate(self, fps: float) -> None:
+        if self._cam is not None:
+            self._cam.set_framerate(fps)
+
+    def set_gain(self, db: float) -> None:
+        if self._cam is not None:
+            self._cam.set_gain(db)
+
     # ─── acquisition ──────────────────────────────────────────────
     def start(self) -> None:
         if self._cam is not None:
