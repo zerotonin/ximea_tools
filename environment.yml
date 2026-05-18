@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
+  - matplotlib>=3.7
   - numpy>=1.24
   - opencv>=4.8
   - pyqt>=5.15

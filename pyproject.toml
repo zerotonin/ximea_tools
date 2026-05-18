@@ -36,6 +36,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
+    "matplotlib>=3.7",
     "numpy>=1.24",
     "opencv-python>=4.8",
     "PyQt5>=5.15",
@@ -65,7 +66,7 @@ Issues = "https://github.com/zerotonin/ximea_tools/issues"
 
 [project.scripts]
 ximea-record = "ximea_tools.cli:main"
-# ximea-gui will be added in Sprint 3.
+ximea-gui    = "ximea_tools.gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
