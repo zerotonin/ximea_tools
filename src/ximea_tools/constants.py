@@ -41,7 +41,7 @@ DEFAULT_ROI_SIZE: tuple[int, int] | None = None  # None = use full sensor
 # ┌────────────────────────────────────────────────────────────┐
 # │ Output paths  « keep recordings off the system drive »     │
 # └────────────────────────────────────────────────────────────┘
-DEFAULT_OUTPUT_DIR: Path = Path("/media/dataSSD")
+DEFAULT_OUTPUT_DIR: Path = Path.home() / "ximea_recordings"
 SETTINGS_PATH: Path = Path.home() / ".config" / "ximea_tools" / "settings.toml"
 FILENAME_TIMESTAMP_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
 
