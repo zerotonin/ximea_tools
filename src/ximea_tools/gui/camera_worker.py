@@ -130,19 +130,42 @@ class CameraWorker(QObject):
     def start_recording(self, rec_cfg: RecordingConfig) -> None:
         if self._recording or self._camera is None:
             return
+        try:
+            rec_cfg.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._abort_recording_start(f"Cannot create {rec_cfg.output_dir}: {e}")
+            return
+
         ts = datetime.now().strftime(FILENAME_TIMESTAMP_FORMAT)
         stem = f"{rec_cfg.filename_prefix}{ts}" if rec_cfg.filename_prefix else ts
-        rec_cfg.output_dir.mkdir(parents=True, exist_ok=True)
         video_path = rec_cfg.output_dir / f"{stem}.mp4"
         meta_path  = rec_cfg.output_dir / f"{stem}.frames.csv"
 
-        writer = Mp4Writer(
-            video_path, self._config.fps, self._camera.frame_shape,
-            queue_size=rec_cfg.queue_size,
-        )
-        writer.__enter__()
+        writer: Mp4Writer | None = None
+        csv_file: TextIO | None = None
+        try:
+            writer = Mp4Writer(
+                video_path, self._config.fps, self._camera.frame_shape,
+                queue_size=rec_cfg.queue_size,
+            )
+            writer.__enter__()
+            csv_file = meta_path.open("w", newline="")
+        except Exception as e:
+            if writer is not None:
+                try:
+                    writer.__exit__(None, None, None)
+                except Exception as ce:
+                    log.debug("Writer cleanup after failed start: %s", ce)
+            if csv_file is not None:
+                try:
+                    csv_file.close()
+                except Exception as ce:
+                    log.debug("CSV cleanup after failed start: %s", ce)
+            self._abort_recording_start(f"Failed to open recording target: {e}")
+            return
+
         self._writer = writer
-        self._csv_file = meta_path.open("w", newline="")
+        self._csv_file = csv_file
         self._csv_writer = csv.writer(self._csv_file)
         self._csv_writer.writerow(["frame_idx", "ts_host_s", "ts_cam_s", "acq_nframe"])
         self._record_t0 = time.time()
@@ -155,6 +178,12 @@ class CameraWorker(QObject):
         self._recording = True
         log.info("Recording start -> %s", video_path)
         self.recordingStateChanged.emit(True, str(video_path))
+
+    def _abort_recording_start(self, message: str) -> None:
+        """Emit the error and reset the recording toggle without crashing the slot."""
+        log.error("start_recording aborted: %s", message)
+        self.error.emit(message)
+        self.recordingStateChanged.emit(False, "")
 
     @pyqtSlot()
     def stop_recording(self) -> None:
