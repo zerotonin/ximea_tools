@@ -32,13 +32,24 @@ VideoFormat = Literal["mp4"]
 
 @dataclass(frozen=True)
 class CameraConfig:
-    """Camera-side settings, validated at construction."""
+    """Camera-side settings, validated at construction.
+
+    ROI semantics differ by backend:
+
+    * XIMEA: ``roi_size`` and ``roi_offset`` configure the on-sensor
+      hardware ROI directly.
+    * UVC:   ``video_mode`` selects the device's native capture
+      resolution; ``roi_size`` and ``roi_offset`` then crop the
+      grabbed frame in software so that aspect ratio is never
+      mangled by a hidden mode change.
+    """
 
     exposure_us:  int               = DEFAULT_EXPOSURE_US
     fps:          float             = DEFAULT_FPS
     gain_db:      float             = DEFAULT_GAIN_DB
     roi_size:     RoiSize | None    = DEFAULT_ROI_SIZE
     roi_offset:   RoiOffset         = DEFAULT_ROI_OFFSET
+    video_mode:   tuple[int, int] | None = None  # UVC capture mode; XIMEA ignores
     trigger_mode: TriggerMode       = "free_run"
     gpi_port:     int               = 1
     serial:       str | None        = None  # None = first connected camera
@@ -52,6 +63,8 @@ class CameraConfig:
             raise ValueError(f"gain_db must be >= 0, got {self.gain_db}")
         if self.roi_size is not None and any(s <= 0 for s in self.roi_size):
             raise ValueError(f"roi_size must be positive, got {self.roi_size}")
+        if self.video_mode is not None and any(s <= 0 for s in self.video_mode):
+            raise ValueError(f"video_mode must be positive, got {self.video_mode}")
         if any(o < 0 for o in self.roi_offset):
             raise ValueError(f"roi_offset must be non-negative, got {self.roi_offset}")
         if self.gpi_port not in (1, 2):
@@ -65,8 +78,10 @@ class RecordingConfig:
     output_dir:      Path        = DEFAULT_OUTPUT_DIR
     duration_s:      float | None = None  # None = run until stop_flag / SIGINT
     filename_prefix: str         = ""
+    filename_suffix: str         = ""
     video_format:    VideoFormat = "mp4"
     queue_size:      int         = 30      # writer thread buffer
+    monochrome:      bool        = False   # convert BGR -> GRAY before encoding
 
     def __post_init__(self) -> None:
         if self.duration_s is not None and self.duration_s <= 0:
