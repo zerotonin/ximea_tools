@@ -6,14 +6,16 @@
 # ║  worker's recording state.  Status row shows frames written,     ║
 # ║  dropped, and elapsed wall-time.                                 ║
 # ╚══════════════════════════════════════════════════════════════════╝
-"""Recording control dock with Start/Stop toggle and live status."""
+"""Recording control dock with Start/Stop toggle, filename builder, and live status."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
@@ -28,6 +30,10 @@ from PyQt5.QtWidgets import (
 
 from ..config import RecordingConfig
 from ..constants import DEFAULT_OUTPUT_DIR
+from ..recorder import build_stem
+
+
+_PATTERN_TEMPLATE = "{prefix_}YYYY-MM-DD__HH-MM-SS{_suffix}.mp4"
 
 
 class RecordingControlsDock(QDockWidget):
@@ -53,6 +59,24 @@ class RecordingControlsDock(QDockWidget):
         self.prefixEdit.setPlaceholderText("optional, before timestamp")
         form.addRow("Prefix", self.prefixEdit)
 
+        self.suffixEdit = QLineEdit("")
+        self.suffixEdit.setPlaceholderText("optional, after timestamp")
+        form.addRow("Suffix", self.suffixEdit)
+
+        # ┌─── filename template explainer ──────────────────────────
+        self.patternLabel = QLabel(f"Pattern:  <code>{_PATTERN_TEMPLATE}</code>")
+        self.patternLabel.setTextFormat(1)  # Qt.RichText
+        self.patternLabel.setStyleSheet("color: #888;")
+        form.addRow(self.patternLabel)
+
+        self.exampleLabel = QLabel("")
+        self.exampleLabel.setStyleSheet("font-family: monospace;")
+        form.addRow("Example", self.exampleLabel)
+        # └──────────────────────────────────────────────────────────
+
+        self.monochromeCheck = QCheckBox("Save as monochrome MP4 (saves space)")
+        form.addRow(self.monochromeCheck)
+
         self.durationSpin = QDoubleSpinBox()
         self.durationSpin.setRange(0.0, 86_400.0 * 7)
         self.durationSpin.setSuffix(" s")
@@ -77,6 +101,9 @@ class RecordingControlsDock(QDockWidget):
 
         self.dirBtn.clicked.connect(self._browse_output_dir)
         self.recordBtn.toggled.connect(self._on_record_toggled)
+        self.prefixEdit.textChanged.connect(self._refresh_example)
+        self.suffixEdit.textChanged.connect(self._refresh_example)
+        self._refresh_example()
 
     # ─── public slots ────────────────────────────────────────────
     @pyqtSlot(int, int, float)
@@ -94,19 +121,25 @@ class RecordingControlsDock(QDockWidget):
             self.recordBtn.setText("● Start Recording")
             self.recordBtn.blockSignals(False)
             self.statusLabel.setText(f"saved: {Path(video_path).name}" if video_path else "idle")
+            self._refresh_example()
 
     def load_from_config(self, cfg: RecordingConfig) -> None:
         self.dirEdit.setText(str(cfg.output_dir))
         self.prefixEdit.setText(cfg.filename_prefix)
+        self.suffixEdit.setText(cfg.filename_suffix)
         self.durationSpin.setValue(cfg.duration_s if cfg.duration_s else 0.0)
         self.queueSpin.setValue(cfg.queue_size)
+        self.monochromeCheck.setChecked(cfg.monochrome)
+        self._refresh_example()
 
     def to_config(self) -> RecordingConfig:
         return RecordingConfig(
             output_dir=Path(self.dirEdit.text()),
             duration_s=self.durationSpin.value() if self.durationSpin.value() > 0 else None,
             filename_prefix=self.prefixEdit.text(),
+            filename_suffix=self.suffixEdit.text(),
             queue_size=self.queueSpin.value(),
+            monochrome=self.monochromeCheck.isChecked(),
         )
 
     # ─── private ─────────────────────────────────────────────────
@@ -122,3 +155,8 @@ class RecordingControlsDock(QDockWidget):
         else:
             self.recordBtn.setText("● Start Recording")
             self.recordingStopRequested.emit()
+
+    def _refresh_example(self) -> None:
+        stem = build_stem(self.prefixEdit.text(), self.suffixEdit.text(),
+                          ts=datetime.now())
+        self.exampleLabel.setText(f"{stem}.mp4")
