@@ -19,7 +19,7 @@ def test_start_recording_emits_error_on_unwritable_dir(qtbot, tmp_path, monkeypa
     monkeypatch.setattr(Path, "mkdir", boom)
 
     cfg = CameraConfig(exposure_us=1_000, fps=100.0, roi_size=(64, 48))
-    worker = CameraWorker(cfg, use_fake=True)
+    worker = CameraWorker(cfg, backend="fake")
 
     with qtbot.waitSignal(worker.started, timeout=2000):
         worker.start()

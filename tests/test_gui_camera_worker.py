@@ -12,7 +12,7 @@ def test_camera_worker_emits_frames(qtbot) -> None:  # type: ignore[no-untyped-d
     from ximea_tools.gui.camera_worker import CameraWorker
 
     cfg = CameraConfig(exposure_us=1_000, fps=100.0)
-    worker = CameraWorker(cfg, use_fake=True)
+    worker = CameraWorker(cfg, backend="fake")
 
     frames = []
     worker.frameReady.connect(lambda f, m: frames.append((f, m)))
@@ -36,7 +36,7 @@ def test_camera_worker_records_on_request(qtbot, tmp_path) -> None:  # type: ign
     from ximea_tools.gui.camera_worker import CameraWorker
 
     cfg = CameraConfig(exposure_us=1_000, fps=100.0, roi_size=(64, 48))
-    worker = CameraWorker(cfg, use_fake=True)
+    worker = CameraWorker(cfg, backend="fake")
 
     with qtbot.waitSignal(worker.started, timeout=2000):
         worker.start()

@@ -26,8 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ximea-gui", description="ximea_tools GUI.")
     p.add_argument("--fake", action="store_true",
                    help="Use the synthetic FakeCamera (no hardware needed).")
+    p.add_argument("--uvc", type=int, nargs="?", const=0, default=None,
+                   metavar="N",
+                   help="Use a UVC webcam via V4L2 (/dev/videoN, default 0).")
     p.add_argument("--serial", type=str, default=None,
-                   help="Camera serial number; default = first connected.")
+                   help="XIMEA serial number; default = first connected.")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="Enable INFO-level logging.")
     return p
@@ -47,7 +50,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.serial:
         settings = replace(settings, camera=replace(settings.camera, serial=args.serial))
 
-    window = MainWindow(settings, use_fake=args.fake)
+    if args.fake:
+        backend, device_index = "fake", 0
+    elif args.uvc is not None:
+        backend, device_index = "uvc", args.uvc
+    else:
+        backend, device_index = "ximea", 0
+
+    window = MainWindow(settings, backend=backend, device_index=device_index)
     window.show()
 
     # let SIGINT propagate through the Qt event loop

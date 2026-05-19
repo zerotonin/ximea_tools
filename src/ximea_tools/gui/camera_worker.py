@@ -24,6 +24,7 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from ..camera import XimeaCamera
 from ..config import CameraConfig, RecordingConfig
 from ..constants import FILENAME_TIMESTAMP_FORMAT
+from ..uvc_camera import UvcCamera
 from ..writer import Mp4Writer
 from .fake_camera import FakeCamera
 
@@ -45,11 +46,19 @@ class CameraWorker(QObject):
     stopped       = pyqtSignal()
     recordingStateChanged = pyqtSignal(bool, str)  # (is_recording, video_path)
 
-    def __init__(self, config: CameraConfig, use_fake: bool = False) -> None:
+    def __init__(
+        self,
+        config: CameraConfig,
+        backend: str = "ximea",
+        device_index: int = 0,
+    ) -> None:
         super().__init__()
+        if backend not in ("ximea", "fake", "uvc"):
+            raise ValueError(f"backend must be ximea|fake|uvc, got {backend!r}")
         self._config = config
-        self._use_fake = use_fake
-        self._camera: XimeaCamera | FakeCamera | None = None
+        self._backend = backend
+        self._device_index = device_index
+        self._camera: XimeaCamera | FakeCamera | UvcCamera | None = None
         self._running = False
         self._recording = False
         self._writer: Mp4Writer | None = None
@@ -202,8 +211,12 @@ class CameraWorker(QObject):
 
     # ─── internals ───────────────────────────────────────────────
     def _open_camera(self) -> None:
-        klass = FakeCamera if self._use_fake else XimeaCamera
-        cam = klass(self._config)
+        if self._backend == "fake":
+            cam: XimeaCamera | FakeCamera | UvcCamera = FakeCamera(self._config)
+        elif self._backend == "uvc":
+            cam = UvcCamera(self._config, device_index=self._device_index)
+        else:
+            cam = XimeaCamera(self._config)
         cam.__enter__()
         cam.start()
         self._camera = cam

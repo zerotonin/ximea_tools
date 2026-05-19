@@ -48,11 +48,22 @@ class MainWindow(QMainWindow):
     _recordingStopRequested    = pyqtSignal()
     _stopWorkerRequested       = pyqtSignal()
 
-    def __init__(self, settings: Settings, use_fake: bool = False) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        backend: str = "ximea",
+        device_index: int = 0,
+    ) -> None:
         super().__init__()
-        self.setWindowTitle("ximea_tools" + ("  [FAKE]" if use_fake else ""))
-        self._settings  = settings
-        self._use_fake  = use_fake
+        tag = {
+            "ximea": "",
+            "fake":  "  [FAKE]",
+            "uvc":   f"  [UVC /dev/video{device_index}]",
+        }[backend]
+        self.setWindowTitle("ximea_tools" + tag)
+        self._settings     = settings
+        self._backend      = backend
+        self._device_index = device_index
 
         # widgets and docks
         self.preview    = PreviewWidget()
@@ -105,7 +116,11 @@ class MainWindow(QMainWindow):
         self.recording.recordingStopRequested.connect(self._recordingStopRequested.emit)
 
     def _start_worker(self) -> None:
-        self.worker = CameraWorker(self._settings.camera, use_fake=self._use_fake)
+        self.worker = CameraWorker(
+            self._settings.camera,
+            backend=self._backend,
+            device_index=self._device_index,
+        )
         self.thread = QThread(self)
         self.worker.moveToThread(self.thread)
 
