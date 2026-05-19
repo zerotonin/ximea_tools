@@ -46,6 +46,9 @@ class MainWindow(QMainWindow):
     _reconfigureRequested      = pyqtSignal(object)
     _recordingStartRequested   = pyqtSignal(object)
     _recordingStopRequested    = pyqtSignal()
+    _armRingBufferRequested    = pyqtSignal(object)
+    _triggerRingSaveRequested  = pyqtSignal()
+    _disarmRingBufferRequested = pyqtSignal()
     _stopWorkerRequested       = pyqtSignal()
 
     def __init__(
@@ -115,6 +118,9 @@ class MainWindow(QMainWindow):
         self.preview.roiSelected.connect(self.controls.set_pending_roi)
         self.recording.recordingStartRequested.connect(self._recordingStartRequested.emit)
         self.recording.recordingStopRequested.connect(self._recordingStopRequested.emit)
+        self.recording.armRingBufferRequested.connect(self._armRingBufferRequested.emit)
+        self.recording.triggerRingSaveRequested.connect(self._triggerRingSaveRequested.emit)
+        self.recording.disarmRingBufferRequested.connect(self._disarmRingBufferRequested.emit)
 
     def _start_worker(self) -> None:
         self.worker = CameraWorker(
@@ -140,6 +146,10 @@ class MainWindow(QMainWindow):
         self._reconfigureRequested.connect(self.worker.reconfigure)
         self._recordingStartRequested.connect(self.worker.start_recording)
         self._recordingStopRequested.connect(self.worker.stop_recording)
+        self._armRingBufferRequested.connect(self.worker.arm_ring_buffer)
+        self._triggerRingSaveRequested.connect(self.worker.trigger_ring_save)
+        self._disarmRingBufferRequested.connect(self.worker.disarm_ring_buffer)
+        self.worker.ringBufferStateChanged.connect(self.recording.on_ring_buffer_state_changed)
         self._stopWorkerRequested.connect(self.worker.stop)
 
         self.thread.start()
