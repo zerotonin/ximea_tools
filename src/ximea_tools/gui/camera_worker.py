@@ -15,15 +15,16 @@ import csv
 import logging
 import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime  # noqa: F401 — kept for downstream import compat
 from pathlib import Path
 from typing import TextIO
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from ..camera import XimeaCamera
+from ..capabilities import CameraCapabilities
 from ..config import CameraConfig, RecordingConfig
-from ..constants import FILENAME_TIMESTAMP_FORMAT
+from ..recorder import build_stem
 from ..uvc_camera import UvcCamera
 from ..writer import Mp4Writer
 from .fake_camera import FakeCamera
@@ -45,6 +46,7 @@ class CameraWorker(QObject):
     started       = pyqtSignal()
     stopped       = pyqtSignal()
     recordingStateChanged = pyqtSignal(bool, str)  # (is_recording, video_path)
+    capabilitiesReady = pyqtSignal(object)         # CameraCapabilities
 
     def __init__(
         self,
@@ -78,6 +80,11 @@ class CameraWorker(QObject):
             log.exception("Camera open failed")
             self.error.emit(f"Camera open failed: {e}")
             return
+        try:
+            caps = self._camera.capabilities()
+            self.capabilitiesReady.emit(caps)
+        except Exception as e:
+            log.debug("capabilities probe failed: %s", e)
         self._running = True
         self.started.emit()
         QTimer.singleShot(0, self._grab_one)
@@ -145,8 +152,7 @@ class CameraWorker(QObject):
             self._abort_recording_start(f"Cannot create {rec_cfg.output_dir}: {e}")
             return
 
-        ts = datetime.now().strftime(FILENAME_TIMESTAMP_FORMAT)
-        stem = f"{rec_cfg.filename_prefix}{ts}" if rec_cfg.filename_prefix else ts
+        stem = build_stem(rec_cfg.filename_prefix, rec_cfg.filename_suffix)
         video_path = rec_cfg.output_dir / f"{stem}.mp4"
         meta_path  = rec_cfg.output_dir / f"{stem}.frames.csv"
 
@@ -156,6 +162,7 @@ class CameraWorker(QObject):
             writer = Mp4Writer(
                 video_path, self._config.fps, self._camera.frame_shape,
                 queue_size=rec_cfg.queue_size,
+                monochrome=rec_cfg.monochrome,
             )
             writer.__enter__()
             csv_file = meta_path.open("w", newline="")
