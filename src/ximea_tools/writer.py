@@ -43,13 +43,16 @@ class Mp4Writer:
         fps: float,
         frame_shape: tuple[int, int],
         queue_size: int = 30,
+        monochrome: bool = False,
     ) -> None:
         self.path = Path(path)
         self.fps = fps
         self.frame_shape = frame_shape  # (H, W)
+        self.monochrome = monochrome
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._writer: cv2.VideoWriter | None = None
+        self._mono_fallback_to_bgr = False  # set when isColor=False refused
         self._stop = threading.Event()
         self.frames_written = 0
         self.frames_dropped = 0
@@ -59,9 +62,25 @@ class Mp4Writer:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         h, w = self.frame_shape
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self._writer = cv2.VideoWriter(
-            str(self.path), fourcc, self.fps, (w, h), isColor=True,
-        )
+
+        if self.monochrome:
+            self._writer = cv2.VideoWriter(
+                str(self.path), fourcc, self.fps, (w, h), isColor=False,
+            )
+            if not self._writer.isOpened():
+                log.warning(
+                    "cv2 mp4v refused isColor=False; falling back to 3-channel grayscale",
+                )
+                self._writer.release()
+                self._mono_fallback_to_bgr = True
+                self._writer = cv2.VideoWriter(
+                    str(self.path), fourcc, self.fps, (w, h), isColor=True,
+                )
+        else:
+            self._writer = cv2.VideoWriter(
+                str(self.path), fourcc, self.fps, (w, h), isColor=True,
+            )
+
         if not self._writer.isOpened():
             raise RuntimeError(f"cv2.VideoWriter failed to open {self.path}")
         self._thread = threading.Thread(
@@ -104,8 +123,14 @@ class Mp4Writer:
             self._queue.task_done()
 
     def _write_one(self, frame: np.ndarray) -> None:
-        if frame.ndim == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if self.monochrome:
+            if frame.ndim == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if self._mono_fallback_to_bgr:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        else:
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         self._writer.write(frame)
         self.frames_written += 1
 
