@@ -43,7 +43,7 @@ DEFAULT_ROI_SIZE: tuple[int, int] | None = None  # None = use full sensor
 # └────────────────────────────────────────────────────────────┘
 DEFAULT_OUTPUT_DIR: Path = Path.home() / "ximea_recordings"
 SETTINGS_PATH: Path = Path.home() / ".config" / "ximea_tools" / "settings.toml"
-FILENAME_TIMESTAMP_FORMAT: str = "%Y-%m-%d_%H-%M-%S"
+FILENAME_TIMESTAMP_FORMAT: str = "%Y-%m-%d__%H-%M-%S"
 
 # ┌────────────────────────────────────────────────────────────┐
 # │ Figure defaults  « SVG-first, editable text in Inkscape »  │

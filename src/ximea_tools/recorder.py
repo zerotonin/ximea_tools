@@ -28,6 +28,21 @@ log = logging.getLogger(__name__)
 ProgressCb = Callable[[int, "int | None"], None]
 
 
+def build_stem(prefix: str, suffix: str, ts: datetime | None = None) -> str:
+    """Build a recording filename stem.
+
+    Format: ``{prefix_}YYYY-MM-DD__HH-MM-SS{_suffix}`` where the brace
+    parts are omitted when ``prefix`` or ``suffix`` is empty.  The
+    timestamp uses :data:`ximea_tools.constants.FILENAME_TIMESTAMP_FORMAT`.
+    """
+    if ts is None:
+        ts = datetime.now()
+    date_str = ts.strftime(FILENAME_TIMESTAMP_FORMAT)
+    p = f"{prefix}_" if prefix else ""
+    s = f"_{suffix}" if suffix else ""
+    return f"{p}{date_str}{s}"
+
+
 class Recorder:
     """High-level: open camera, stream frames into writer + CSV, return summary."""
 
@@ -56,7 +71,8 @@ class Recorder:
 
         with XimeaCamera(ccfg) as cam, \
              Mp4Writer(video_path, ccfg.fps, cam.frame_shape,
-                       queue_size=rcfg.queue_size) as writer, \
+                       queue_size=rcfg.queue_size,
+                       monochrome=rcfg.monochrome) as writer, \
              meta_path.open("w", newline="") as meta_f:
 
             csv_writer = csv.writer(meta_f)
@@ -90,8 +106,7 @@ class Recorder:
     # ─── helpers ──────────────────────────────────────────────────
     def _paths(self) -> tuple[Path, Path]:
         rcfg = self.recording_cfg
-        ts = datetime.now().strftime(FILENAME_TIMESTAMP_FORMAT)
-        stem = f"{rcfg.filename_prefix}{ts}" if rcfg.filename_prefix else ts
+        stem = build_stem(rcfg.filename_prefix, rcfg.filename_suffix)
         rcfg.output_dir.mkdir(parents=True, exist_ok=True)
         return (
             rcfg.output_dir / f"{stem}.mp4",
