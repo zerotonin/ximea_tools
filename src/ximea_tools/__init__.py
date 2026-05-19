@@ -24,6 +24,7 @@ from .config import (
     parse_roi,
 )
 from .recorder import Recorder
+from .uvc_camera import UvcCamera
 from .writer import Mp4Writer
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "Recorder",
     "RecordingConfig",
     "RecordingResult",
+    "UvcCamera",
     "XimeaCamera",
     "parse_roi",
 ]

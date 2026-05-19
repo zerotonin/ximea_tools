@@ -9,6 +9,7 @@ API reference
    ximea_tools.constants
    ximea_tools.config
    ximea_tools.camera
+   ximea_tools.uvc_camera
    ximea_tools.writer
    ximea_tools.recorder
    ximea_tools.cli
