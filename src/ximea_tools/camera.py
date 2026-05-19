@@ -20,6 +20,7 @@ from typing import Iterator
 
 import numpy as np
 
+from .capabilities import CameraCapabilities  # noqa: F401 — re-exported by typing
 from .config import CameraConfig
 
 log = logging.getLogger(__name__)
@@ -165,6 +166,14 @@ class XimeaCamera:
                 yield self.grab()
         finally:
             self.stop()
+
+    def capabilities(self) -> "CameraCapabilities":
+        """Query xiapi for sensor size and parameter ranges."""
+        from .capabilities import probe_ximea_capabilities  # lazy: avoid cycle
+        if self._cam is None:
+            from .capabilities import CameraCapabilities
+            return CameraCapabilities()
+        return probe_ximea_capabilities(self._cam)
 
     # ─── introspection ────────────────────────────────────────────
     def describe(self) -> str:

@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from .camera import FrameMeta
+from .capabilities import CameraCapabilities
 from .config import CameraConfig
 
 log = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ class UvcCamera:
         self._config = config
         self._device_index = device_index
         self._cap: cv2.VideoCapture | None = None
-        self.frame_shape: tuple[int, int] | None = None
+        self.frame_shape: tuple[int, int] | None = None     # cropped shape
+        self._native_shape: tuple[int, int] | None = None   # before ROI crop
         self._t0 = 0.0
         self._frame_idx = 0
 
@@ -57,7 +59,8 @@ class UvcCamera:
             raise RuntimeError(
                 f"/dev/video{self._device_index} opened but first read failed"
             )
-        self.frame_shape = frame.shape[:2]
+        self._native_shape = frame.shape[:2]
+        self.frame_shape = self._cropped_shape(frame.shape[:2])
         self._t0 = time.time()
         log.info("UvcCamera open — %s", self.describe())
         return self
@@ -71,15 +74,44 @@ class UvcCamera:
     def _apply_config(self) -> None:
         cap = self._cap
         cfg = self._config
-        if cfg.roi_size is not None:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cfg.roi_size[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.roi_size[1])
+        # Native capture mode (separate from ROI; ROI is software crop)
+        if cfg.video_mode is not None:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cfg.video_mode[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.video_mode[1])
         cap.set(cv2.CAP_PROP_FPS, cfg.fps)
         # 1 = manual on V4L2 backend; 3 = aperture-priority (auto).
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
         cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure_us / 100.0)
         if cfg.gain_db > 0:
             cap.set(cv2.CAP_PROP_GAIN, cfg.gain_db)
+
+    def _cropped_shape(self, native_hw: tuple[int, int]) -> tuple[int, int]:
+        """Compute the post-crop frame shape (H, W) for the configured ROI."""
+        cfg = self._config
+        if cfg.roi_size is None:
+            return native_hw
+        nh, nw = native_hw
+        rw, rh = cfg.roi_size
+        ox, oy = cfg.roi_offset
+        ch = max(0, min(rh, nh - oy))
+        cw = max(0, min(rw, nw - ox))
+        return (ch, cw)
+
+    def _crop(self, frame: np.ndarray) -> np.ndarray:
+        cfg = self._config
+        if cfg.roi_size is None:
+            return frame
+        nh, nw = frame.shape[:2]
+        ox, oy = cfg.roi_offset
+        rw, rh = cfg.roi_size
+        x2 = min(nw, ox + rw)
+        y2 = min(nh, oy + rh)
+        return frame[oy:y2, ox:x2]
+
+    def capabilities(self) -> CameraCapabilities:
+        """Probe v4l2-ctl for modes and control ranges."""
+        from .capabilities import probe_uvc_capabilities
+        return probe_uvc_capabilities(self._device_index)
 
     # ─── live setters ─────────────────────────────────────────────
     def set_exposure(self, us: int) -> None:
@@ -102,6 +134,7 @@ class UvcCamera:
         ok, frame = self._cap.read()
         if not ok:
             raise RuntimeError(f"UVC read failed on /dev/video{self._device_index}")
+        frame = self._crop(frame)
         meta = FrameMeta(
             acq_nframe=self._frame_idx,
             ts_host_s=time.time(),
