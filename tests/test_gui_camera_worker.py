@@ -66,3 +66,88 @@ def test_camera_worker_records_on_request(qtbot, tmp_path) -> None:  # type: ign
     csv_text = csvs[0].read_text().strip().splitlines()
     assert csv_text[0] == "frame_idx,ts_host_s,ts_cam_s,acq_nframe"
     assert len(csv_text) >= 5  # header + several frames
+
+
+def test_ring_buffer_arm_trigger_save(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """End-to-end ring flow: arm, fill, trigger, file written."""
+    from ximea_tools.config import RecordingConfig
+    from ximea_tools.gui.camera_worker import CameraWorker
+
+    cfg = CameraConfig(exposure_us=1_000, fps=100.0, roi_size=(64, 48))
+    worker = CameraWorker(cfg, backend="fake")
+
+    with qtbot.waitSignal(worker.started, timeout=2000):
+        worker.start()
+
+    rec_cfg = RecordingConfig(
+        output_dir=tmp_path,
+        filename_prefix="ring_",
+        mode="ring_buffer",
+        ring_pre_seconds=0.1,    # ~10 frames at 100 fps
+        ring_post_seconds=0.05,  # ~5 frames
+        queue_size=64,
+    )
+
+    with qtbot.waitSignal(worker.ringBufferStateChanged, timeout=3000) as armed:
+        worker.arm_ring_buffer(rec_cfg)
+    assert armed.args[0] == "armed"
+
+    # Wait until the pre-buffer has caught at least 5 frames.
+    qtbot.waitUntil(
+        lambda: worker._ring is not None and worker._ring.fill_frames >= 5,  # noqa: SLF001
+        timeout=3000,
+    )
+
+    # Triggering should ultimately produce an MP4 and a CSV.
+    worker.trigger_ring_save()
+    qtbot.waitUntil(lambda: worker._ring is None, timeout=5000)  # noqa: SLF001
+
+    with qtbot.waitSignal(worker.stopped, timeout=3000):
+        worker.stop()
+
+    mp4s = list(tmp_path.glob("ring_*.mp4"))
+    csvs = list(tmp_path.glob("ring_*.frames.csv"))
+    assert len(mp4s) == 1 and mp4s[0].stat().st_size > 0
+    assert len(csvs) == 1
+    csv_lines = csvs[0].read_text().strip().splitlines()
+    assert csv_lines[0] == "frame_idx,ts_host_s,ts_cam_s,acq_nframe"
+    # header + at least the post tail
+    assert len(csv_lines) >= 4
+
+
+def test_ring_buffer_disarm_drops_no_file(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Arming then disarming must not create any output file."""
+    from ximea_tools.config import RecordingConfig
+    from ximea_tools.gui.camera_worker import CameraWorker
+
+    cfg = CameraConfig(exposure_us=1_000, fps=100.0, roi_size=(32, 32))
+    worker = CameraWorker(cfg, backend="fake")
+
+    with qtbot.waitSignal(worker.started, timeout=2000):
+        worker.start()
+
+    rec_cfg = RecordingConfig(
+        output_dir=tmp_path,
+        filename_prefix="never_",
+        mode="ring_buffer",
+        ring_pre_seconds=0.1,
+        ring_post_seconds=0.05,
+    )
+
+    with qtbot.waitSignal(worker.ringBufferStateChanged, timeout=3000):
+        worker.arm_ring_buffer(rec_cfg)
+
+    qtbot.waitUntil(
+        lambda: worker._ring is not None and worker._ring.fill_frames >= 3,  # noqa: SLF001
+        timeout=2000,
+    )
+
+    with qtbot.waitSignal(worker.recordingStateChanged, timeout=3000) as ev:
+        worker.disarm_ring_buffer()
+    assert ev.args[0] is False
+
+    with qtbot.waitSignal(worker.stopped, timeout=3000):
+        worker.stop()
+
+    assert list(tmp_path.glob("never_*.mp4")) == []
+    assert list(tmp_path.glob("never_*.frames.csv")) == []
