@@ -28,6 +28,7 @@ from .constants import (
 
 TriggerMode = Literal["free_run", "edge_rising", "edge_falling"]
 VideoFormat = Literal["mp4"]
+RecordingMode = Literal["free_run", "timed", "ring_buffer", "external"]
 
 
 @dataclass(frozen=True)
@@ -73,21 +74,31 @@ class CameraConfig:
 
 @dataclass(frozen=True)
 class RecordingConfig:
-    """Recording-side settings: where to write, for how long."""
+    """Recording-side settings: where to write, for how long, in which mode."""
 
-    output_dir:      Path        = DEFAULT_OUTPUT_DIR
-    duration_s:      float | None = None  # None = run until stop_flag / SIGINT
-    filename_prefix: str         = ""
-    filename_suffix: str         = ""
-    video_format:    VideoFormat = "mp4"
-    queue_size:      int         = 30      # writer thread buffer
-    monochrome:      bool        = False   # convert BGR -> GRAY before encoding
+    output_dir:        Path          = DEFAULT_OUTPUT_DIR
+    duration_s:        float | None  = None   # used by `timed` mode
+    filename_prefix:   str           = ""
+    filename_suffix:   str           = ""
+    video_format:      VideoFormat   = "mp4"
+    queue_size:        int           = 30     # writer thread buffer
+    monochrome:        bool          = False  # convert BGR -> GRAY before encoding
+    mode:              RecordingMode = "free_run"
+    ring_pre_seconds:  float         = 5.0
+    ring_post_seconds: float         = 2.0
+    ring_max_ram_mb:   int           = 1024   # hard cap on pre-buffer size
 
     def __post_init__(self) -> None:
         if self.duration_s is not None and self.duration_s <= 0:
             raise ValueError(f"duration_s must be > 0 or None, got {self.duration_s}")
         if self.queue_size <= 0:
             raise ValueError(f"queue_size must be > 0, got {self.queue_size}")
+        if self.ring_pre_seconds < 0:
+            raise ValueError(f"ring_pre_seconds must be >= 0, got {self.ring_pre_seconds}")
+        if self.ring_post_seconds < 0:
+            raise ValueError(f"ring_post_seconds must be >= 0, got {self.ring_post_seconds}")
+        if self.ring_max_ram_mb <= 0:
+            raise ValueError(f"ring_max_ram_mb must be > 0, got {self.ring_max_ram_mb}")
 
 
 @dataclass(frozen=True)
