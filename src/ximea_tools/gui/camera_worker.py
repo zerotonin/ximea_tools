@@ -24,7 +24,7 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from ..camera import XimeaCamera
 from ..capabilities import CameraCapabilities
 from ..config import CameraConfig, RecordingConfig
-from ..recorder import build_stem
+from ..recorder import RingBuffer, build_stem
 from ..uvc_camera import UvcCamera
 from ..writer import Mp4Writer
 from .fake_camera import FakeCamera
@@ -47,6 +47,7 @@ class CameraWorker(QObject):
     stopped       = pyqtSignal()
     recordingStateChanged = pyqtSignal(bool, str)  # (is_recording, video_path)
     capabilitiesReady = pyqtSignal(object)         # CameraCapabilities
+    ringBufferStateChanged = pyqtSignal(str, int, int)  # (state, fill, total)
 
     def __init__(
         self,
@@ -70,6 +71,10 @@ class CameraWorker(QObject):
         self._record_frame_idx = 0
         self._max_record_frames: int | None = None
         self._video_path: Path | None = None
+        # Ring-buffer state
+        self._ring: RingBuffer | None = None
+        self._ring_cfg: RecordingConfig | None = None
+        self._ring_last_emit = 0
 
     # ─── lifecycle ───────────────────────────────────────────────
     @pyqtSlot()
@@ -201,6 +206,107 @@ class CameraWorker(QObject):
         self.error.emit(message)
         self.recordingStateChanged.emit(False, "")
 
+    # ─── ring buffer ─────────────────────────────────────────────
+    @pyqtSlot(object)
+    def arm_ring_buffer(self, rec_cfg: RecordingConfig) -> None:
+        if self._ring is not None or self._camera is None:
+            return
+        shape = self._camera.frame_shape or (480, 640)
+        # XIMEA mono → 1 byte/pix; UVC/Fake BGR → 3 bytes/pix.
+        bpp = 1 if self._backend == "ximea" else 3
+        try:
+            self._ring = RingBuffer(
+                pre_seconds=rec_cfg.ring_pre_seconds,
+                post_seconds=rec_cfg.ring_post_seconds,
+                fps=self._config.fps,
+                frame_shape=shape,
+                bytes_per_pix=bpp,
+                max_ram_mb=rec_cfg.ring_max_ram_mb,
+            )
+        except Exception as e:
+            self.error.emit(f"Cannot arm ring buffer: {e}")
+            self.recordingStateChanged.emit(False, "")
+            return
+        self._ring_cfg = rec_cfg
+        self._ring_last_emit = 0
+        if self._ring.pre_frames_clamped:
+            log.warning(
+                "Ring buffer pre-frames clamped to %d (RAM cap %d MB)",
+                self._ring.pre_frames, rec_cfg.ring_max_ram_mb,
+            )
+        log.info(
+            "Ring buffer armed: pre=%d post=%d frames",
+            self._ring.pre_frames, self._ring.post_frames,
+        )
+        self.recordingStateChanged.emit(True, "armed")
+        self.ringBufferStateChanged.emit("armed", 0, self._ring.pre_frames)
+
+    @pyqtSlot()
+    def trigger_ring_save(self) -> None:
+        if self._ring is None or self._ring.state != "armed":
+            return
+        self._ring.trigger()
+        self.ringBufferStateChanged.emit(
+            self._ring.state, self._ring.fill_frames, self._ring.pre_frames,
+        )
+
+    @pyqtSlot()
+    def disarm_ring_buffer(self) -> None:
+        if self._ring is None:
+            return
+        self._ring = None
+        self._ring_cfg = None
+        log.info("Ring buffer disarmed; %d frames dropped", 0)
+        self.ringBufferStateChanged.emit("idle", 0, 0)
+        self.recordingStateChanged.emit(False, "")
+
+    def _flush_ring_to_disk(self) -> None:
+        """Called when the ring buffer is in state==done."""
+        assert self._ring is not None and self._ring_cfg is not None
+        rcfg = self._ring_cfg
+        try:
+            rcfg.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.error.emit(f"Cannot create {rcfg.output_dir}: {e}")
+            self._ring = None
+            self._ring_cfg = None
+            self.recordingStateChanged.emit(False, "")
+            self.ringBufferStateChanged.emit("idle", 0, 0)
+            return
+
+        stem = build_stem(rcfg.filename_prefix, rcfg.filename_suffix)
+        video_path = rcfg.output_dir / f"{stem}.mp4"
+        meta_path  = rcfg.output_dir / f"{stem}.frames.csv"
+        shape = self._camera.frame_shape or (480, 640)
+
+        log.info("Ring buffer flushing %d frames -> %s",
+                 self._ring.total_frames, video_path)
+        self.ringBufferStateChanged.emit(
+            "writing", self._ring.fill_frames, self._ring.total_frames,
+        )
+        try:
+            with Mp4Writer(
+                video_path, self._config.fps, shape,
+                queue_size=rcfg.queue_size, monochrome=rcfg.monochrome,
+            ) as writer, meta_path.open("w", newline="") as meta_f:
+                csv_writer = csv.writer(meta_f)
+                csv_writer.writerow(
+                    ["frame_idx", "ts_host_s", "ts_cam_s", "acq_nframe"]
+                )
+                for idx, (frame, meta) in enumerate(self._ring.frames()):
+                    writer.submit(frame)
+                    csv_writer.writerow(
+                        [idx, meta.ts_host_s, meta.ts_cam_s, meta.acq_nframe]
+                    )
+        except Exception as e:
+            log.exception("Ring buffer flush failed")
+            self.error.emit(f"Ring flush failed: {e}")
+        finally:
+            self._ring = None
+            self._ring_cfg = None
+        self.recordingStateChanged.emit(False, str(video_path))
+        self.ringBufferStateChanged.emit("idle", 0, 0)
+
     @pyqtSlot()
     def stop_recording(self) -> None:
         if not self._recording:
@@ -271,5 +377,17 @@ class CameraWorker(QObject):
             if (self._max_record_frames is not None
                     and self._record_frame_idx >= self._max_record_frames):
                 self.stop_recording()
+        if self._ring is not None:
+            state = self._ring.push(frame, meta)
+            # throttle the buffer-fill signal to once every ~10 frames so
+            # the GUI doesn't drown in updates
+            self._ring_last_emit += 1
+            if self._ring_last_emit >= 10 or state in ("post", "done"):
+                self._ring_last_emit = 0
+                self.ringBufferStateChanged.emit(
+                    state, self._ring.fill_frames, self._ring.pre_frames,
+                )
+            if state == "done":
+                self._flush_ring_to_disk()
         self.frameReady.emit(frame, meta)
         QTimer.singleShot(0, self._grab_one)
