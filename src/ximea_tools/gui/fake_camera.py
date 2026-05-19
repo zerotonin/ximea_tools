@@ -17,6 +17,7 @@ from typing import Iterator
 import numpy as np
 
 from ..camera import FrameMeta
+from ..capabilities import CameraCapabilities, Range, VideoMode
 from ..config import CameraConfig
 
 
@@ -79,6 +80,16 @@ class FakeCamera:
                 yield self.grab()
         finally:
             self.stop()
+
+    def capabilities(self) -> CameraCapabilities:
+        return CameraCapabilities(
+            modes=(VideoMode(640, 480, "FAKE", (10.0, 30.0, 60.0, 100.0)),),
+            exposure_us=Range(1.0, 1_000_000.0, 1.0),
+            gain_db=Range(0.0, 24.0, 0.5),
+            fps=Range(0.1, 500.0, 0.1),
+            supports_hardware_roi=False,
+            supports_hardware_trigger=False,
+        )
 
     def describe(self) -> str:
         c = self._config
