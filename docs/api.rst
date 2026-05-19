@@ -10,6 +10,8 @@ API reference
    ximea_tools.config
    ximea_tools.camera
    ximea_tools.uvc_camera
+   ximea_tools.capabilities
+   ximea_tools.discovery
    ximea_tools.writer
    ximea_tools.recorder
    ximea_tools.cli
@@ -22,5 +24,6 @@ API reference
    ximea_tools.gui.controls_dock
    ximea_tools.gui.recording_dock
    ximea_tools.gui.trigger_dock
+   ximea_tools.gui.camera_picker
    ximea_tools.gui.main_window
    ximea_tools.gui.app
