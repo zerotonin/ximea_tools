@@ -36,6 +36,8 @@ class Settings:
     recording:     RecordingConfig
     window_size:   tuple[int, int] = (1280, 800)
     histogram_hz:  float           = 5.0
+    last_backend:  str             = "ximea"  # ximea | uvc | fake
+    last_device:   str             = ""       # serial or "/dev/videoN"
 
 
 # ┌────────────────────────────────────────────────────────────┐
@@ -52,6 +54,8 @@ def _camera_to_dict(c: CameraConfig) -> dict:
     }
     if c.roi_size is not None:
         d["roi_size"] = list(c.roi_size)
+    if c.video_mode is not None:
+        d["video_mode"] = list(c.video_mode)
     if c.serial is not None:
         d["serial"] = str(c.serial)
     return d
@@ -59,12 +63,14 @@ def _camera_to_dict(c: CameraConfig) -> dict:
 
 def _camera_from_dict(d: dict) -> CameraConfig:
     raw_size = d.get("roi_size")
+    raw_mode = d.get("video_mode")
     return CameraConfig(
         exposure_us=int(d.get("exposure_us", DEFAULT_EXPOSURE_US)),
         fps=float(d.get("fps", DEFAULT_FPS)),
         gain_db=float(d.get("gain_db", DEFAULT_GAIN_DB)),
         roi_size=tuple(raw_size) if raw_size else None,
         roi_offset=tuple(d.get("roi_offset", DEFAULT_ROI_OFFSET)),
+        video_mode=tuple(raw_mode) if raw_mode else None,
         trigger_mode=d.get("trigger_mode", "free_run"),
         gpi_port=int(d.get("gpi_port", 1)),
         serial=d.get("serial"),
@@ -78,8 +84,10 @@ def _recording_to_dict(r: RecordingConfig) -> dict:
     d: dict = {
         "output_dir":      str(r.output_dir),
         "filename_prefix": str(r.filename_prefix),
+        "filename_suffix": str(r.filename_suffix),
         "video_format":    str(r.video_format),
         "queue_size":      int(r.queue_size),
+        "monochrome":      bool(r.monochrome),
     }
     if r.duration_s is not None:
         d["duration_s"] = float(r.duration_s)
@@ -91,8 +99,10 @@ def _recording_from_dict(d: dict) -> RecordingConfig:
         output_dir=Path(d.get("output_dir", str(DEFAULT_OUTPUT_DIR))),
         duration_s=d.get("duration_s"),
         filename_prefix=d.get("filename_prefix", ""),
+        filename_suffix=d.get("filename_suffix", ""),
         video_format=d.get("video_format", "mp4"),
         queue_size=int(d.get("queue_size", 30)),
+        monochrome=bool(d.get("monochrome", False)),
     )
 
 
@@ -108,12 +118,15 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
     cam = _camera_from_dict(data.get("camera", {}))
     rec = _recording_from_dict(data.get("recording", {}))
     win = data.get("window", {})
+    sel = data.get("selection", {})
     size = tuple(win.get("size", (1280, 800)))
     return Settings(
         camera=cam,
         recording=rec,
         window_size=(int(size[0]), int(size[1])),
         histogram_hz=float(win.get("histogram_hz", 5.0)),
+        last_backend=str(sel.get("backend", "ximea")),
+        last_device=str(sel.get("device", "")),
     )
 
 
@@ -126,6 +139,10 @@ def save_settings(settings: Settings, path: Path = SETTINGS_PATH) -> None:
         "window": {
             "size":         list(settings.window_size),
             "histogram_hz": float(settings.histogram_hz),
+        },
+        "selection": {
+            "backend": settings.last_backend,
+            "device":  settings.last_device,
         },
     }
     with path.open("wb") as f:
