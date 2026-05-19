@@ -1,17 +1,19 @@
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  ximea_tools — gui.controls_dock                                 ║
-# ║  « exposure, fps, gain, and ROI controls »                       ║
+# ║  « exposure, fps, gain, mode, and ROI controls »                 ║
 # ╠══════════════════════════════════════════════════════════════════╣
 # ║  Slider+spinbox combos that emit live deltas for exposure,       ║
-# ║  framerate, and gain; ROI is set via rubber-band on the          ║
-# ║  preview and committed with Apply (camera restarts).             ║
+# ║  framerate, and gain.  Mode combo (for UVC) selects the          ║
+# ║  native capture resolution.  ROI is set via rubber-band on       ║
+# ║  the preview and committed with Apply (camera restarts).         ║
 # ╚══════════════════════════════════════════════════════════════════╝
-"""Camera control dock: exposure, fps, gain, ROI."""
+"""Camera control dock: exposure, fps, gain, video mode, ROI."""
 
 from __future__ import annotations
 
 from PyQt5.QtCore import pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
+    QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFormLayout,
@@ -22,23 +24,32 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..capabilities import CameraCapabilities, VideoMode
 from ..config import CameraConfig
 from ..constants import DEFAULT_EXPOSURE_US, DEFAULT_FPS, DEFAULT_GAIN_DB
 
 
 class CameraControlsDock(QDockWidget):
-    """Dock with exposure/fps/gain spinners and a deferred ROI applier."""
+    """Dock with exposure/fps/gain spinners, mode combo, and deferred ROI."""
 
     exposureChanged   = pyqtSignal(int)
     fpsChanged        = pyqtSignal(float)
     gainChanged       = pyqtSignal(float)
-    roiApplyRequested = pyqtSignal(object, object)  # (size: tuple|None, offset: tuple)
+    roiApplyRequested = pyqtSignal(object, object)            # (size, offset)
+    videoModeApplyRequested = pyqtSignal(object)              # (w, h) | None
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Camera", parent)
 
         widget = QWidget()
         form = QFormLayout(widget)
+
+        self.modeCombo = QComboBox()
+        self.modeCombo.addItem("native (probe pending)", None)
+        form.addRow("Mode", self.modeCombo)
+
+        self.applyModeBtn = QPushButton("Apply mode (restarts camera)")
+        form.addRow(self.applyModeBtn)
 
         self.expSpin = QSpinBox()
         self.expSpin.setRange(1, 1_000_000)
@@ -77,12 +88,14 @@ class CameraControlsDock(QDockWidget):
 
         self._pending_size:   tuple[int, int] | None = None
         self._pending_offset: tuple[int, int]        = (0, 0)
+        self._capabilities: CameraCapabilities | None = None
 
         self.expSpin.valueChanged.connect(self.exposureChanged.emit)
         self.fpsSpin.valueChanged.connect(self.fpsChanged.emit)
         self.gainSpin.valueChanged.connect(self.gainChanged.emit)
         self.applyRoiBtn.clicked.connect(self._on_apply_roi)
         self.resetRoiBtn.clicked.connect(self._on_reset_roi)
+        self.applyModeBtn.clicked.connect(self._on_apply_mode)
 
     # ─── slots ────────────────────────────────────────────────────
     @pyqtSlot(int, int, int, int)
@@ -91,16 +104,55 @@ class CameraControlsDock(QDockWidget):
         self._pending_offset = (x, y)
         self.roiLabel.setText(f"{w}×{h} +{x}+{y}  (pending — click Apply)")
 
+    @pyqtSlot(object)
+    def apply_capabilities(self, caps: CameraCapabilities) -> None:
+        """Bound spinboxes to real device ranges; populate mode combo."""
+        self._capabilities = caps
+
+        if caps.exposure_us is not None:
+            self._set_spin_range(self.expSpin,
+                                 int(caps.exposure_us.minimum),
+                                 int(caps.exposure_us.maximum))
+        if caps.gain_db is not None:
+            self._set_spin_range(self.gainSpin,
+                                 float(caps.gain_db.minimum),
+                                 float(caps.gain_db.maximum))
+        if caps.fps is not None:
+            self._set_spin_range(self.fpsSpin,
+                                 float(caps.fps.minimum),
+                                 float(caps.fps.maximum))
+
+        self.modeCombo.blockSignals(True)
+        self.modeCombo.clear()
+        if not caps.modes:
+            self.modeCombo.addItem("native", None)
+        else:
+            # Show each (W, H, pixfmt @ best-fps) entry but the value we store
+            # is just (W, H) — pixel format is implementation detail.
+            seen: set[tuple[int, int]] = set()
+            for m in caps.modes:
+                key = (m.width, m.height)
+                if key in seen:
+                    continue
+                seen.add(key)
+                best_fps = max(m.fps_options) if m.fps_options else None
+                label = f"{m.width}×{m.height}" + (
+                    f"  @ {best_fps:g} fps" if best_fps else ""
+                )
+                self.modeCombo.addItem(label, key)
+        self.modeCombo.blockSignals(False)
+
+        self.applyModeBtn.setEnabled(self.modeCombo.count() > 1)
+
     def load_from_config(self, cfg: CameraConfig) -> None:
-        for spin, sig, val in (
-            (self.expSpin,  self.exposureChanged, cfg.exposure_us),
-            (self.fpsSpin,  self.fpsChanged,      cfg.fps),
-            (self.gainSpin, self.gainChanged,     cfg.gain_db),
+        for spin, val in (
+            (self.expSpin,  cfg.exposure_us),
+            (self.fpsSpin,  cfg.fps),
+            (self.gainSpin, cfg.gain_db),
         ):
             spin.blockSignals(True)
             spin.setValue(val)
             spin.blockSignals(False)
-            _ = sig  # silence linter on unused alias
         if cfg.roi_size is not None:
             w, h = cfg.roi_size
             x, y = cfg.roi_offset
@@ -111,6 +163,10 @@ class CameraControlsDock(QDockWidget):
             self._pending_size = None
             self._pending_offset = (0, 0)
             self.roiLabel.setText("full sensor")
+        if cfg.video_mode is not None:
+            idx = self.modeCombo.findData(cfg.video_mode)
+            if idx >= 0:
+                self.modeCombo.setCurrentIndex(idx)
 
     def to_config_fields(self) -> dict:
         """Return current control values as a kwargs dict for CameraConfig."""
@@ -120,6 +176,7 @@ class CameraControlsDock(QDockWidget):
             "gain_db":     self.gainSpin.value(),
             "roi_size":    self._pending_size,
             "roi_offset":  self._pending_offset,
+            "video_mode":  self.modeCombo.currentData(),
         }
 
     # ─── private ──────────────────────────────────────────────────
@@ -135,3 +192,14 @@ class CameraControlsDock(QDockWidget):
         self._pending_offset = (0, 0)
         self.roiLabel.setText("full sensor")
         self.roiApplyRequested.emit(None, (0, 0))
+
+    def _on_apply_mode(self) -> None:
+        self.videoModeApplyRequested.emit(self.modeCombo.currentData())
+
+    @staticmethod
+    def _set_spin_range(spin, lo, hi) -> None:
+        current = spin.value()
+        spin.blockSignals(True)
+        spin.setRange(lo, hi)
+        spin.setValue(max(lo, min(hi, current)))
+        spin.blockSignals(False)
