@@ -82,12 +82,16 @@ def _camera_from_dict(d: dict) -> CameraConfig:
 # └────────────────────────────────────────────────────────────┘
 def _recording_to_dict(r: RecordingConfig) -> dict:
     d: dict = {
-        "output_dir":      str(r.output_dir),
-        "filename_prefix": str(r.filename_prefix),
-        "filename_suffix": str(r.filename_suffix),
-        "video_format":    str(r.video_format),
-        "queue_size":      int(r.queue_size),
-        "monochrome":      bool(r.monochrome),
+        "output_dir":         str(r.output_dir),
+        "filename_prefix":    str(r.filename_prefix),
+        "filename_suffix":    str(r.filename_suffix),
+        "video_format":       str(r.video_format),
+        "queue_size":         int(r.queue_size),
+        "monochrome":         bool(r.monochrome),
+        "mode":               str(r.mode),
+        "ring_pre_seconds":   float(r.ring_pre_seconds),
+        "ring_post_seconds":  float(r.ring_post_seconds),
+        "ring_max_ram_mb":    int(r.ring_max_ram_mb),
     }
     if r.duration_s is not None:
         d["duration_s"] = float(r.duration_s)
@@ -103,6 +107,10 @@ def _recording_from_dict(d: dict) -> RecordingConfig:
         video_format=d.get("video_format", "mp4"),
         queue_size=int(d.get("queue_size", 30)),
         monochrome=bool(d.get("monochrome", False)),
+        mode=d.get("mode", "free_run"),
+        ring_pre_seconds=float(d.get("ring_pre_seconds", 5.0)),
+        ring_post_seconds=float(d.get("ring_post_seconds", 2.0)),
+        ring_max_ram_mb=int(d.get("ring_max_ram_mb", 1024)),
     )
 
 
