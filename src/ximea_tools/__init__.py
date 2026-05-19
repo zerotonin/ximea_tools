@@ -17,25 +17,33 @@ except ImportError:
     __version__ = "0.0.0+unknown"
 
 from .camera import FrameMeta, XimeaCamera
+from .capabilities import CameraCapabilities, Range, VideoMode
 from .config import (
     CameraConfig,
     RecordingConfig,
     RecordingResult,
     parse_roi,
 )
-from .recorder import Recorder
+from .discovery import CameraInfo, list_all_cameras
+from .recorder import Recorder, build_stem
 from .uvc_camera import UvcCamera
 from .writer import Mp4Writer
 
 __all__ = [
     "__version__",
+    "CameraCapabilities",
     "CameraConfig",
+    "CameraInfo",
     "FrameMeta",
     "Mp4Writer",
+    "Range",
     "Recorder",
     "RecordingConfig",
     "RecordingResult",
     "UvcCamera",
+    "VideoMode",
     "XimeaCamera",
+    "build_stem",
+    "list_all_cameras",
     "parse_roi",
 ]
