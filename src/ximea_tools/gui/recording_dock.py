@@ -1,12 +1,12 @@
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  ximea_tools — gui.recording_dock                                ║
-# ║  « output, duration, queue, and start/stop »                     ║
+# ║  « mode-aware recording controls »                               ║
 # ╠══════════════════════════════════════════════════════════════════╣
-# ║  Builds a RecordingConfig from form fields and toggles the       ║
-# ║  worker's recording state.  Status row shows frames written,     ║
-# ║  dropped, and elapsed wall-time.                                 ║
+# ║  Top combo selects the recording mode; a QStackedWidget swaps    ║
+# ║  mode-specific parameter widgets below; the shared bottom row    ║
+# ║  carries the main toggle (and a Trigger button in ring mode).    ║
 # ╚══════════════════════════════════════════════════════════════════╝
-"""Recording control dock with Start/Stop toggle, filename builder, and live status."""
+"""Recording control dock — mode selector, parameters, start/stop."""
 
 from __future__ import annotations
 
@@ -16,15 +16,19 @@ from pathlib import Path
 from PyQt5.QtCore import pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -35,18 +39,40 @@ from ..recorder import build_stem
 
 _PATTERN_TEMPLATE = "{prefix_}YYYY-MM-DD__HH-MM-SS{_suffix}.mp4"
 
+_MODE_LABELS = [
+    ("Free run",                  "free_run"),
+    ("Timed duration",            "timed"),
+    ("Ring buffer (pre + post)",  "ring_buffer"),
+    ("External trigger (v0.6)",   "external"),
+]
+
 
 class RecordingControlsDock(QDockWidget):
-    """Dock controlling where recordings go and when they start/stop."""
+    """Mode-aware recording dock."""
 
     recordingStartRequested = pyqtSignal(object)  # RecordingConfig
     recordingStopRequested  = pyqtSignal()
+    armRingBufferRequested  = pyqtSignal(object)  # RecordingConfig
+    triggerRingSaveRequested = pyqtSignal()
+    disarmRingBufferRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Recording", parent)
 
-        widget = QWidget()
-        form = QFormLayout(widget)
+        root = QWidget()
+        outer = QVBoxLayout(root)
+
+        # ─── mode selector ───────────────────────────────────────
+        self.modeCombo = QComboBox()
+        for label, key in _MODE_LABELS:
+            self.modeCombo.addItem(label, key)
+        outer.addWidget(QLabel("Mode"))
+        outer.addWidget(self.modeCombo)
+        outer.addWidget(self._hline())
+
+        # ─── shared form (output, filenames, monochrome, queue) ──
+        shared = QWidget()
+        form = QFormLayout(shared)
 
         dir_row = QHBoxLayout()
         self.dirEdit = QLineEdit(str(DEFAULT_OUTPUT_DIR))
@@ -63,7 +89,6 @@ class RecordingControlsDock(QDockWidget):
         self.suffixEdit.setPlaceholderText("optional, after timestamp")
         form.addRow("Suffix", self.suffixEdit)
 
-        # ┌─── filename template explainer ──────────────────────────
         self.patternLabel = QLabel(f"Pattern:  <code>{_PATTERN_TEMPLATE}</code>")
         self.patternLabel.setTextFormat(1)  # Qt.RichText
         self.patternLabel.setStyleSheet("color: #888;")
@@ -72,38 +97,101 @@ class RecordingControlsDock(QDockWidget):
         self.exampleLabel = QLabel("")
         self.exampleLabel.setStyleSheet("font-family: monospace;")
         form.addRow("Example", self.exampleLabel)
-        # └──────────────────────────────────────────────────────────
 
         self.monochromeCheck = QCheckBox("Save as monochrome MP4 (saves space)")
         form.addRow(self.monochromeCheck)
-
-        self.durationSpin = QDoubleSpinBox()
-        self.durationSpin.setRange(0.0, 86_400.0 * 7)
-        self.durationSpin.setSuffix(" s")
-        self.durationSpin.setDecimals(1)
-        self.durationSpin.setSpecialValueText("unlimited")
-        self.durationSpin.setValue(0.0)
-        form.addRow("Duration", self.durationSpin)
 
         self.queueSpin = QSpinBox()
         self.queueSpin.setRange(1, 1000)
         self.queueSpin.setValue(30)
         form.addRow("Queue", self.queueSpin)
 
+        outer.addWidget(shared)
+        outer.addWidget(self._hline())
+
+        # ─── mode-specific parameters (QStackedWidget) ───────────
+        self.modeStack = QStackedWidget()
+
+        # Page 0: free_run (no extra params)
+        self.modeStack.addWidget(QLabel(
+            "<i>Start records until you press Stop.</i>"
+        ))
+
+        # Page 1: timed (duration)
+        page_timed = QWidget()
+        tlayout = QFormLayout(page_timed)
+        self.durationSpin = QDoubleSpinBox()
+        self.durationSpin.setRange(0.1, 86_400.0 * 7)
+        self.durationSpin.setSuffix(" s")
+        self.durationSpin.setDecimals(1)
+        self.durationSpin.setValue(10.0)
+        tlayout.addRow("Duration", self.durationSpin)
+        self.modeStack.addWidget(page_timed)
+
+        # Page 2: ring buffer (pre / post / RAM)
+        page_ring = QWidget()
+        rlayout = QFormLayout(page_ring)
+        self.preSpin = QDoubleSpinBox()
+        self.preSpin.setRange(0.0, 300.0)
+        self.preSpin.setSuffix(" s")
+        self.preSpin.setDecimals(1)
+        self.preSpin.setValue(5.0)
+        rlayout.addRow("Pre-trigger", self.preSpin)
+        self.postSpin = QDoubleSpinBox()
+        self.postSpin.setRange(0.0, 300.0)
+        self.postSpin.setSuffix(" s")
+        self.postSpin.setDecimals(1)
+        self.postSpin.setValue(2.0)
+        rlayout.addRow("Post-trigger", self.postSpin)
+        self.ramSpin = QSpinBox()
+        self.ramSpin.setRange(16, 65_536)
+        self.ramSpin.setSuffix(" MB")
+        self.ramSpin.setValue(1024)
+        rlayout.addRow("RAM cap", self.ramSpin)
+        rlayout.addRow(QLabel(
+            "<i>Arm fills a rolling buffer; Trigger captures the post-tail,<br/>"
+            "then writes pre + post to disk.</i>"
+        ))
+        self.modeStack.addWidget(page_ring)
+
+        # Page 3: external (placeholder)
+        page_ext = QWidget()
+        ext_layout = QVBoxLayout(page_ext)
+        ext_layout.addWidget(QLabel(
+            "<i>External trigger (CueWire) lands in v0.6.<br/>"
+            "Once available, arming here will start the recording when<br/>"
+            "the host receives a cue event.</i>"
+        ))
+        self.modeStack.addWidget(page_ext)
+
+        outer.addWidget(self.modeStack)
+        outer.addWidget(self._hline())
+
+        # ─── action buttons ──────────────────────────────────────
         self.recordBtn = QPushButton("● Start Recording")
         self.recordBtn.setCheckable(True)
-        form.addRow(self.recordBtn)
+        outer.addWidget(self.recordBtn)
+
+        self.triggerBtn = QPushButton("📷 Trigger & Save")
+        self.triggerBtn.setEnabled(False)
+        self.triggerBtn.hide()
+        outer.addWidget(self.triggerBtn)
 
         self.statusLabel = QLabel("idle")
-        form.addRow("Status", self.statusLabel)
+        outer.addWidget(self.statusLabel)
 
-        self.setWidget(widget)
+        outer.addStretch(1)
+        self.setWidget(root)
 
+        # ─── connections ─────────────────────────────────────────
         self.dirBtn.clicked.connect(self._browse_output_dir)
         self.recordBtn.toggled.connect(self._on_record_toggled)
+        self.triggerBtn.clicked.connect(self._on_trigger_pressed)
         self.prefixEdit.textChanged.connect(self._refresh_example)
         self.suffixEdit.textChanged.connect(self._refresh_example)
+        self.modeCombo.currentIndexChanged.connect(self._on_mode_changed)
         self._refresh_example()
+        self._on_mode_changed(self.modeCombo.currentIndex())
 
     # ─── public slots ────────────────────────────────────────────
     @pyqtSlot(int, int, float)
@@ -113,48 +201,126 @@ class RecordingControlsDock(QDockWidget):
         )
 
     @pyqtSlot(bool, str)
-    def on_recording_state_changed(self, is_recording: bool, video_path: str) -> None:
-        """Sync UI when worker confirms/finishes recording."""
-        if not is_recording:
+    def on_recording_state_changed(self, is_active: bool, video_path: str) -> None:
+        """Worker signals when a free/timed recording starts/ends or a ring saves."""
+        if not is_active:
             self.recordBtn.blockSignals(True)
             self.recordBtn.setChecked(False)
-            self.recordBtn.setText("● Start Recording")
             self.recordBtn.blockSignals(False)
-            self.statusLabel.setText(f"saved: {Path(video_path).name}" if video_path else "idle")
+            self._refresh_buttons_for_mode()
+            self.triggerBtn.setEnabled(False)
+            if video_path:
+                self.statusLabel.setText(f"saved: {Path(video_path).name}")
+            else:
+                self.statusLabel.setText("idle")
             self._refresh_example()
+        else:
+            # active — leave button in 'on' state; update text if available
+            mode = self.modeCombo.currentData()
+            if mode == "ring_buffer" and video_path == "armed":
+                self.statusLabel.setText("armed — fill buffer, then trigger")
+                self.triggerBtn.setEnabled(True)
+            elif video_path and video_path not in ("armed",):
+                self.statusLabel.setText(video_path)
+
+    @pyqtSlot(str, int, int)
+    def on_ring_buffer_state_changed(self, state: str, fill: int, total: int) -> None:
+        if state == "armed":
+            pct = (fill * 100 // total) if total else 0
+            self.statusLabel.setText(f"armed · buffer {fill}/{total} ({pct}%)")
+            self.triggerBtn.setEnabled(True)
+        elif state == "post":
+            self.statusLabel.setText("capturing post-trigger frames…")
+            self.triggerBtn.setEnabled(False)
+        elif state == "writing":
+            self.statusLabel.setText("writing buffer to disk…")
+            self.triggerBtn.setEnabled(False)
+        elif state == "idle":
+            self.triggerBtn.setEnabled(False)
 
     def load_from_config(self, cfg: RecordingConfig) -> None:
         self.dirEdit.setText(str(cfg.output_dir))
         self.prefixEdit.setText(cfg.filename_prefix)
         self.suffixEdit.setText(cfg.filename_suffix)
-        self.durationSpin.setValue(cfg.duration_s if cfg.duration_s else 0.0)
         self.queueSpin.setValue(cfg.queue_size)
         self.monochromeCheck.setChecked(cfg.monochrome)
+        if cfg.duration_s is not None:
+            self.durationSpin.setValue(cfg.duration_s)
+        self.preSpin.setValue(cfg.ring_pre_seconds)
+        self.postSpin.setValue(cfg.ring_post_seconds)
+        self.ramSpin.setValue(cfg.ring_max_ram_mb)
+        idx = self.modeCombo.findData(cfg.mode)
+        if idx >= 0:
+            self.modeCombo.setCurrentIndex(idx)
         self._refresh_example()
 
     def to_config(self) -> RecordingConfig:
+        mode = self.modeCombo.currentData() or "free_run"
+        duration = self.durationSpin.value() if mode == "timed" else None
         return RecordingConfig(
             output_dir=Path(self.dirEdit.text()),
-            duration_s=self.durationSpin.value() if self.durationSpin.value() > 0 else None,
+            duration_s=duration,
             filename_prefix=self.prefixEdit.text(),
             filename_suffix=self.suffixEdit.text(),
             queue_size=self.queueSpin.value(),
             monochrome=self.monochromeCheck.isChecked(),
+            mode=mode,
+            ring_pre_seconds=self.preSpin.value(),
+            ring_post_seconds=self.postSpin.value(),
+            ring_max_ram_mb=self.ramSpin.value(),
         )
 
     # ─── private ─────────────────────────────────────────────────
+    @staticmethod
+    def _hline() -> QFrame:
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        return line
+
     def _browse_output_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Output directory", self.dirEdit.text())
         if d:
             self.dirEdit.setText(d)
 
+    def _on_mode_changed(self, idx: int) -> None:
+        self.modeStack.setCurrentIndex(idx)
+        self._refresh_buttons_for_mode()
+
+    def _refresh_buttons_for_mode(self) -> None:
+        mode = self.modeCombo.currentData()
+        is_ring = (mode == "ring_buffer")
+        is_external = (mode == "external")
+        self.triggerBtn.setVisible(is_ring)
+        self.recordBtn.setEnabled(not is_external)
+        checked = self.recordBtn.isChecked()
+        if mode == "free_run":
+            self.recordBtn.setText("■ Stop Recording" if checked else "● Start Recording")
+        elif mode == "timed":
+            self.recordBtn.setText("■ Stop Recording" if checked else "● Start (timed)")
+        elif mode == "ring_buffer":
+            self.recordBtn.setText("■ Disarm" if checked else "▶ Arm Ring Buffer")
+        else:  # external
+            self.recordBtn.setText("(connect CueWire)")
+
     def _on_record_toggled(self, on: bool) -> None:
-        if on:
-            self.recordBtn.setText("■ Stop Recording")
-            self.recordingStartRequested.emit(self.to_config())
+        mode = self.modeCombo.currentData()
+        cfg = self.to_config()
+        if mode == "ring_buffer":
+            if on:
+                self.armRingBufferRequested.emit(cfg)
+            else:
+                self.disarmRingBufferRequested.emit()
         else:
-            self.recordBtn.setText("● Start Recording")
-            self.recordingStopRequested.emit()
+            if on:
+                self.recordingStartRequested.emit(cfg)
+            else:
+                self.recordingStopRequested.emit()
+        self._refresh_buttons_for_mode()
+
+    def _on_trigger_pressed(self) -> None:
+        self.triggerBtn.setEnabled(False)
+        self.triggerRingSaveRequested.emit()
 
     def _refresh_example(self) -> None:
         stem = build_stem(self.prefixEdit.text(), self.suffixEdit.text(),
