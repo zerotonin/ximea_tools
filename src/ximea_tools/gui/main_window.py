@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self.controls.fpsChanged.connect(self._setFramerateRequested.emit)
         self.controls.gainChanged.connect(self._setGainRequested.emit)
         self.controls.roiApplyRequested.connect(self._on_roi_apply)
+        self.controls.videoModeApplyRequested.connect(self._on_video_mode_apply)
         self.trigger.triggerApplyRequested.connect(self._on_trigger_apply)
         self.preview.roiSelected.connect(self.controls.set_pending_roi)
         self.recording.recordingStartRequested.connect(self._recordingStartRequested.emit)
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self.worker.statusChanged.connect(self.recording.update_status)
         self.worker.statusChanged.connect(self._on_record_status)
         self.worker.recordingStateChanged.connect(self.recording.on_recording_state_changed)
+        self.worker.capabilitiesReady.connect(self.controls.apply_capabilities)
         self.worker.error.connect(self._on_error)
         self.worker.stopped.connect(self.thread.quit)
 
@@ -193,6 +195,13 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, int)
     def _on_trigger_apply(self, mode: str, port: int) -> None:
         new_cam = replace(self._settings.camera, trigger_mode=mode, gpi_port=port)
+        self._settings = replace(self._settings, camera=new_cam)
+        self._reconfigureRequested.emit(new_cam)
+
+    @pyqtSlot(object)
+    def _on_video_mode_apply(self, mode: object) -> None:
+        """Set the UVC native capture mode (no effect on XIMEA)."""
+        new_cam = replace(self._settings.camera, video_mode=mode)
         self._settings = replace(self._settings, camera=new_cam)
         self._reconfigureRequested.emit(new_cam)
 
