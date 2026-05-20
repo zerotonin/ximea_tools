@@ -115,6 +115,39 @@ def test_ring_buffer_arm_trigger_save(qtbot, tmp_path) -> None:  # type: ignore[
     assert len(csv_lines) >= 4
 
 
+def test_timed_mode_auto_stops_by_wall_clock(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Auto-stop must trigger on elapsed seconds, not frame count."""
+    from ximea_tools.config import RecordingConfig
+    from ximea_tools.gui.camera_worker import CameraWorker
+    import time as _t
+
+    cfg = CameraConfig(exposure_us=1_000, fps=100.0, roi_size=(48, 32))
+    worker = CameraWorker(cfg, backend="fake")
+    with qtbot.waitSignal(worker.started, timeout=2000):
+        worker.start()
+
+    rec_cfg = RecordingConfig(
+        output_dir=tmp_path,
+        mode="timed",
+        duration_s=0.2,
+        filename_prefix="timed_",
+    )
+
+    with qtbot.waitSignal(worker.recordingStateChanged, timeout=2000) as ev0:
+        worker.start_recording(rec_cfg)
+    assert ev0.args[0] is True
+    t_start = _t.time()
+
+    with qtbot.waitSignal(worker.recordingStateChanged, timeout=3000) as ev1:
+        pass
+    elapsed = _t.time() - t_start
+    assert ev1.args[0] is False
+    assert 0.15 <= elapsed <= 1.5, f"expected ~0.2s, got {elapsed:.2f}s"
+
+    with qtbot.waitSignal(worker.stopped, timeout=2000):
+        worker.stop()
+
+
 def test_ring_buffer_disarm_drops_no_file(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
     """Arming then disarming must not create any output file."""
     from ximea_tools.config import RecordingConfig
