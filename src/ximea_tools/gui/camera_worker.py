@@ -69,7 +69,7 @@ class CameraWorker(QObject):
         self._csv_writer: object = None  # csv._writer.writer; not statically typed
         self._record_t0 = 0.0
         self._record_frame_idx = 0
-        self._max_record_frames: int | None = None
+        self._max_record_seconds: float | None = None
         self._video_path: Path | None = None
         # Ring-buffer state
         self._ring: RingBuffer | None = None
@@ -191,10 +191,7 @@ class CameraWorker(QObject):
         self._csv_writer.writerow(["frame_idx", "ts_host_s", "ts_cam_s", "acq_nframe"])
         self._record_t0 = time.time()
         self._record_frame_idx = 0
-        self._max_record_frames = (
-            int(rec_cfg.duration_s * self._config.fps)
-            if rec_cfg.duration_s else None
-        )
+        self._max_record_seconds = rec_cfg.duration_s  # None for free-run
         self._video_path = video_path
         self._recording = True
         log.info("Recording start -> %s", video_path)
@@ -374,8 +371,8 @@ class CameraWorker(QObject):
                 self._writer.frames_dropped,
                 elapsed,
             )
-            if (self._max_record_frames is not None
-                    and self._record_frame_idx >= self._max_record_frames):
+            if (self._max_record_seconds is not None
+                    and elapsed >= self._max_record_seconds):
                 self.stop_recording()
         if self._ring is not None:
             state = self._ring.push(frame, meta)
