@@ -59,3 +59,45 @@ def test_progress_bars_max_track_frame_budget(qtbot) -> None:  # type: ignore[no
     # 3.0 s × 50 fps = 150 frames pre, 1.0 s × 50 fps = 50 frames post.
     assert dock.preBar.maximum() == 150
     assert dock.postBar.maximum() == 50
+
+
+def test_camera_dock_fps_test_button(qtbot) -> None:  # type: ignore[no-untyped-def]
+    from ximea_tools.gui.controls_dock import CameraControlsDock
+
+    dock = CameraControlsDock()
+    qtbot.addWidget(dock)
+
+    # Pressing the test button disables itself and announces the test.
+    with qtbot.waitSignal(dock.fpsTestRequested, timeout=500):
+        dock.testFpsBtn.click()
+    assert dock.testFpsBtn.isEnabled() is False
+    assert "testing" in dock.fpsResultLabel.text().lower()
+
+    # Completing the test re-enables the button and shows the value.
+    dock.show_fps_test_result(24.7)
+    assert dock.testFpsBtn.isEnabled() is True
+    assert "24.7" in dock.fpsResultLabel.text()
+
+
+def test_camera_dock_switch_camera_button(qtbot) -> None:  # type: ignore[no-untyped-def]
+    from ximea_tools.gui.controls_dock import CameraControlsDock
+
+    dock = CameraControlsDock()
+    qtbot.addWidget(dock)
+
+    with qtbot.waitSignal(dock.switchCameraRequested, timeout=500):
+        dock.switchCameraBtn.click()
+
+
+def test_camera_dock_label_updates(qtbot) -> None:  # type: ignore[no-untyped-def]
+    from ximea_tools.gui.controls_dock import CameraControlsDock
+
+    dock = CameraControlsDock()
+    qtbot.addWidget(dock)
+
+    dock.set_camera_label("uvc", "/dev/video0")
+    assert "/dev/video0" in dock.cameraLabel.text()
+    dock.set_camera_label("fake", "")
+    assert "FAKE" in dock.cameraLabel.text()
+    dock.set_camera_label("ximea", "ABC123")
+    assert "ABC123" in dock.cameraLabel.text()
