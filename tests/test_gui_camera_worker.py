@@ -115,6 +115,27 @@ def test_ring_buffer_arm_trigger_save(qtbot, tmp_path) -> None:  # type: ignore[
     assert len(csv_lines) >= 4
 
 
+def test_worker_measures_actual_fps(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Worker should report a measured_fps close to the FakeCamera's sleep rate."""
+    from ximea_tools.gui.camera_worker import CameraWorker
+
+    cfg = CameraConfig(exposure_us=1_000, fps=50.0, roi_size=(32, 32))
+    worker = CameraWorker(cfg, backend="fake")
+
+    with qtbot.waitSignal(worker.started, timeout=2000):
+        worker.start()
+
+    with qtbot.waitSignal(worker.measuredFpsChanged, timeout=3000) as ev:
+        pass
+
+    fps = ev.args[0]
+    assert 25.0 < fps < 75.0, f"expected ~45-50 fps, got {fps:.1f}"
+    assert worker.measured_fps > 0
+
+    with qtbot.waitSignal(worker.stopped, timeout=2000):
+        worker.stop()
+
+
 def test_timed_mode_auto_stops_by_wall_clock(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
     """Auto-stop must trigger on elapsed seconds, not frame count."""
     from ximea_tools.config import RecordingConfig
