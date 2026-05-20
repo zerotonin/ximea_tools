@@ -55,6 +55,9 @@ class FakeCamera:
     def set_gain(self, db: float) -> None:
         self._config = replace(self._config, gain_db=db)
 
+    def set_auto_exposure(self, on: bool) -> None:
+        self._config = replace(self._config, auto_exposure=on)
+
     # ─── acquisition ──────────────────────────────────────────────
     def grab(self) -> tuple[np.ndarray, FrameMeta]:
         h, w = self.frame_shape

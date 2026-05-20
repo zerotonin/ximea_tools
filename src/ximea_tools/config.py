@@ -45,15 +45,16 @@ class CameraConfig:
       mangled by a hidden mode change.
     """
 
-    exposure_us:  int               = DEFAULT_EXPOSURE_US
-    fps:          float             = DEFAULT_FPS
-    gain_db:      float             = DEFAULT_GAIN_DB
-    roi_size:     RoiSize | None    = DEFAULT_ROI_SIZE
-    roi_offset:   RoiOffset         = DEFAULT_ROI_OFFSET
-    video_mode:   tuple[int, int] | None = None  # UVC capture mode; XIMEA ignores
-    trigger_mode: TriggerMode       = "free_run"
-    gpi_port:     int               = 1
-    serial:       str | None        = None  # None = first connected camera
+    exposure_us:   int               = DEFAULT_EXPOSURE_US
+    fps:           float             = DEFAULT_FPS
+    gain_db:       float             = DEFAULT_GAIN_DB
+    auto_exposure: bool              = True   # let camera AE the exposure
+    roi_size:      RoiSize | None    = DEFAULT_ROI_SIZE
+    roi_offset:    RoiOffset         = DEFAULT_ROI_OFFSET
+    video_mode:    tuple[int, int] | None = None  # UVC capture mode; XIMEA ignores
+    trigger_mode:  TriggerMode       = "free_run"
+    gpi_port:      int               = 1
+    serial:        str | None        = None  # None = first connected camera
 
     def __post_init__(self) -> None:
         if self.exposure_us <= 0:

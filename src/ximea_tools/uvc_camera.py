@@ -79,9 +79,15 @@ class UvcCamera:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH,  cfg.video_mode[0])
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.video_mode[1])
         cap.set(cv2.CAP_PROP_FPS, cfg.fps)
-        # 1 = manual on V4L2 backend; 3 = aperture-priority (auto).
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure_us / 100.0)
+        # V4L2 auto_exposure: 1 = Manual, 3 = Aperture Priority.  Manual
+        # often throttles webcam fps (LifeCam: 7.5 manual vs 10+ auto), so
+        # auto is the default.  Manual is engaged only when the user
+        # explicitly turns it off — see set_auto_exposure().
+        if cfg.auto_exposure:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+        else:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+            cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure_us / 100.0)
         if cfg.gain_db > 0:
             cap.set(cv2.CAP_PROP_GAIN, cfg.gain_db)
 
@@ -115,8 +121,12 @@ class UvcCamera:
 
     # ─── live setters ─────────────────────────────────────────────
     def set_exposure(self, us: int) -> None:
-        if self._cap is not None:
-            self._cap.set(cv2.CAP_PROP_EXPOSURE, us / 100.0)
+        if self._cap is None:
+            return
+        # Setting the absolute exposure in auto mode is a no-op on most
+        # drivers, but switching to manual here can fight the user's
+        # auto_exposure preference; only apply when we're already manual.
+        self._cap.set(cv2.CAP_PROP_EXPOSURE, us / 100.0)
 
     def set_framerate(self, fps: float) -> None:
         if self._cap is not None:
@@ -125,6 +135,15 @@ class UvcCamera:
     def set_gain(self, db: float) -> None:
         if self._cap is not None:
             self._cap.set(cv2.CAP_PROP_GAIN, db)
+
+    def set_auto_exposure(self, on: bool) -> None:
+        if self._cap is None:
+            return
+        if on:
+            self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+        else:
+            self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+            self._cap.set(cv2.CAP_PROP_EXPOSURE, self._config.exposure_us / 100.0)
 
     # ─── acquisition ──────────────────────────────────────────────
     def start(self) -> None: ...   # VideoCapture is continuous

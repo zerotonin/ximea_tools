@@ -138,6 +138,12 @@ class XimeaCamera:
         if self._cam is not None:
             self._cam.set_gain(db)
 
+    def set_auto_exposure(self, on: bool) -> None:
+        """XIMEA has no aperture-priority mode — exposure is always manual."""
+        # Honour user intent by re-applying the configured exposure_us.
+        if self._cam is not None and not on:
+            self._cam.set_exposure(self._config.exposure_us)
+
     # ─── acquisition ──────────────────────────────────────────────
     def start(self) -> None:
         if self._cam is not None:
