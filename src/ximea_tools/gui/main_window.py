@@ -15,10 +15,11 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
+    QDialog,
     QDockWidget,
     QFileDialog,
     QLabel,
@@ -29,6 +30,8 @@ from PyQt5.QtWidgets import (
 
 from ..config import CameraConfig
 from ..constants import SETTINGS_PATH
+from ..discovery import CameraInfo, list_all_cameras
+from .camera_picker import CameraPickerDialog
 from .camera_worker import CameraWorker
 from .controls_dock import CameraControlsDock
 from .histogram_widget import HistogramWidget
@@ -45,6 +48,7 @@ class MainWindow(QMainWindow):
     _setExposureRequested      = pyqtSignal(int)
     _setFramerateRequested     = pyqtSignal(float)
     _setGainRequested          = pyqtSignal(float)
+    _setAutoExposureRequested  = pyqtSignal(bool)
     _reconfigureRequested      = pyqtSignal(object)
     _recordingStartRequested   = pyqtSignal(object)
     _recordingStopRequested    = pyqtSignal()
@@ -52,6 +56,7 @@ class MainWindow(QMainWindow):
     _triggerRingSaveRequested  = pyqtSignal()
     _disarmRingBufferRequested = pyqtSignal()
     _stopWorkerRequested       = pyqtSignal()
+    _resetFpsMeasurementReq    = pyqtSignal()
 
     def __init__(
         self,
@@ -60,15 +65,10 @@ class MainWindow(QMainWindow):
         device_index: int = 0,
     ) -> None:
         super().__init__()
-        tag = {
-            "ximea": "",
-            "fake":  "  [FAKE]",
-            "uvc":   f"  [UVC /dev/video{device_index}]",
-        }[backend]
-        self.setWindowTitle("ximea_tools" + tag)
         self._settings     = settings
         self._backend      = backend
         self._device_index = device_index
+        self._refresh_window_title()
 
         # widgets and docks
         self.preview    = PreviewWidget()
@@ -113,12 +113,29 @@ class MainWindow(QMainWindow):
         self.controls.load_from_config(s.camera)
         self.recording.load_from_config(s.recording)
         self.trigger.load_from_config(s.camera.trigger_mode, s.camera.gpi_port)
+        self.controls.set_camera_label(self._backend, self._uvc_path() or s.last_device)
         self.resize(*s.window_size)
+
+    def _uvc_path(self) -> str:
+        if self._backend == "uvc":
+            return f"/dev/video{self._device_index}"
+        return ""
+
+    def _refresh_window_title(self) -> None:
+        tag = {
+            "ximea": "",
+            "fake":  "  [FAKE]",
+            "uvc":   f"  [UVC /dev/video{self._device_index}]",
+        }[self._backend]
+        self.setWindowTitle("ximea_tools" + tag)
 
     def _wire_signals(self) -> None:
         self.controls.exposureChanged.connect(self._setExposureRequested.emit)
         self.controls.fpsChanged.connect(self._setFramerateRequested.emit)
         self.controls.gainChanged.connect(self._setGainRequested.emit)
+        self.controls.autoExposureChanged.connect(self._setAutoExposureRequested.emit)
+        self.controls.switchCameraRequested.connect(self._on_switch_camera)
+        self.controls.fpsTestRequested.connect(self._on_test_fps)
         self.controls.roiApplyRequested.connect(self._on_roi_apply)
         self.controls.videoModeApplyRequested.connect(self._on_video_mode_apply)
         self.trigger.triggerApplyRequested.connect(self._on_trigger_apply)
@@ -152,6 +169,8 @@ class MainWindow(QMainWindow):
         self._setExposureRequested.connect(self.worker.set_exposure)
         self._setFramerateRequested.connect(self.worker.set_framerate)
         self._setGainRequested.connect(self.worker.set_gain)
+        self._setAutoExposureRequested.connect(self.worker.set_auto_exposure)
+        self._resetFpsMeasurementReq.connect(self.worker.reset_fps_measurement)
         self._reconfigureRequested.connect(self.worker.reconfigure)
         self._recordingStartRequested.connect(self.worker.start_recording)
         self._recordingStopRequested.connect(self.worker.stop_recording)
@@ -255,6 +274,83 @@ class MainWindow(QMainWindow):
         new_cam = replace(self._settings.camera, video_mode=mode)
         self._settings = replace(self._settings, camera=new_cam)
         self._reconfigureRequested.emit(new_cam)
+
+    # ─── camera switcher + fps test ──────────────────────────────
+    @pyqtSlot()
+    def _on_switch_camera(self) -> None:
+        cams = list_all_cameras()
+        if not cams:
+            QMessageBox.information(
+                self, "No cameras",
+                "No cameras detected.  Plug one in and try again.",
+            )
+            return
+        preselect = self._uvc_path() or self._settings.last_device
+        dlg = CameraPickerDialog(cams, preselect=preselect, parent=self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        chosen = dlg.selected_camera()
+        if chosen is None:
+            return
+        self._switch_to_camera(chosen)
+
+    def _switch_to_camera(self, chosen: CameraInfo) -> None:
+        backend, device_index = self._worker_args_for(chosen)
+        if backend == self._backend and device_index == self._device_index:
+            return  # no-op
+        # Tear down current worker and thread.
+        self._stopWorkerRequested.emit()
+        self.thread.wait(3000)
+        # Persist selection.
+        self._settings = replace(
+            self._settings,
+            last_backend=chosen.backend,
+            last_device=chosen.identifier,
+        )
+        if chosen.backend == "ximea" and chosen.identifier:
+            self._settings = replace(
+                self._settings,
+                camera=replace(self._settings.camera, serial=chosen.identifier),
+            )
+        save_settings(self._settings, SETTINGS_PATH)
+        # Restart worker on the new backend.
+        self._backend = backend
+        self._device_index = device_index
+        self._frame_context_sent = False
+        self._refresh_window_title()
+        self.controls.set_camera_label(chosen.backend, chosen.identifier)
+        self._start_worker()
+        self.statusBar().showMessage(
+            f"Switched to {chosen.name}", 4000,
+        )
+
+    @staticmethod
+    def _worker_args_for(c: CameraInfo) -> tuple[str, int]:
+        if c.backend == "uvc":
+            try:
+                return ("uvc", int(c.identifier.removeprefix("/dev/video")))
+            except ValueError:
+                return ("uvc", 0)
+        return (c.backend if c.backend in ("ximea", "fake") else "ximea", 0)
+
+    @pyqtSlot()
+    def _on_test_fps(self) -> None:
+        """Reset the worker's EMA, wait 3 s, report the measured fps."""
+        self._resetFpsMeasurementReq.emit()
+        self.statusBar().showMessage("Measuring fps for 3 s…", 3500)
+        QTimer.singleShot(3000, self._finish_fps_test)
+
+    def _finish_fps_test(self) -> None:
+        fps = float(getattr(self.worker, "measured_fps", 0.0))
+        self.controls.show_fps_test_result(fps)
+        cfg_fps = self._settings.camera.fps
+        ratio = fps / cfg_fps if cfg_fps > 0 else 0
+        hint = ""
+        if 0 < ratio < 0.85:
+            hint = "  (consider more light, or check USB autosuspend)"
+        self.statusBar().showMessage(
+            f"Test result: {fps:.1f} fps{hint}", 6000,
+        )
 
     # ─── menu actions ────────────────────────────────────────────
     def _save_preset_as(self) -> None:
