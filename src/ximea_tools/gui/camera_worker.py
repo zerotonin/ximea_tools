@@ -105,6 +105,13 @@ class CameraWorker(QObject):
     def stop(self) -> None:
         self._running = False  # grab loop will tear down on next tick
 
+    @pyqtSlot()
+    def reset_fps_measurement(self) -> None:
+        """Start the EMA fresh — used by the GUI's FPS test button."""
+        self._measured_fps = 0.0
+        self._fps_samples = 0
+        self._last_grab_t = None
+
     # ─── live setters (no restart needed) ────────────────────────
     @pyqtSlot(int)
     def set_exposure(self, us: int) -> None:
@@ -135,6 +142,16 @@ class CameraWorker(QObject):
             self._config = replace(self._config, gain_db=db)
         except Exception as e:
             log.warning("set_gain failed: %s", e)
+
+    @pyqtSlot(bool)
+    def set_auto_exposure(self, on: bool) -> None:
+        if self._camera is None:
+            return
+        try:
+            self._camera.set_auto_exposure(on)
+            self._config = replace(self._config, auto_exposure=on)
+        except Exception as e:
+            log.warning("set_auto_exposure failed: %s", e)
 
     @pyqtSlot(object)
     def reconfigure(self, new_config: CameraConfig) -> None:
