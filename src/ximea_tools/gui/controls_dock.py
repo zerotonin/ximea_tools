@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
@@ -32,17 +33,31 @@ from ..constants import DEFAULT_EXPOSURE_US, DEFAULT_FPS, DEFAULT_GAIN_DB
 class CameraControlsDock(QDockWidget):
     """Dock with exposure/fps/gain spinners, mode combo, and deferred ROI."""
 
-    exposureChanged   = pyqtSignal(int)
-    fpsChanged        = pyqtSignal(float)
-    gainChanged       = pyqtSignal(float)
-    roiApplyRequested = pyqtSignal(object, object)            # (size, offset)
+    exposureChanged     = pyqtSignal(int)
+    fpsChanged          = pyqtSignal(float)
+    gainChanged         = pyqtSignal(float)
+    autoExposureChanged = pyqtSignal(bool)
+    roiApplyRequested   = pyqtSignal(object, object)          # (size, offset)
     videoModeApplyRequested = pyqtSignal(object)              # (w, h) | None
+    switchCameraRequested = pyqtSignal()
+    fpsTestRequested      = pyqtSignal()
+
+    _DEBOUNCE_MS = 150  # rate-limit ioctl flood while scrolling
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Camera", parent)
 
         widget = QWidget()
         form = QFormLayout(widget)
+
+        # ─── Camera switcher row ──────────────────────────────────
+        switcher_row = QHBoxLayout()
+        self.cameraLabel = QLabel("camera: —")
+        self.cameraLabel.setStyleSheet("font-family: monospace;")
+        self.switchCameraBtn = QPushButton("🔄 Switch…")
+        switcher_row.addWidget(self.cameraLabel, 1)
+        switcher_row.addWidget(self.switchCameraBtn)
+        form.addRow(switcher_row)
 
         self.modeCombo = QComboBox()
         self.modeCombo.addItem("native (probe pending)", None)
@@ -51,11 +66,25 @@ class CameraControlsDock(QDockWidget):
         self.applyModeBtn = QPushButton("Apply mode (restarts camera)")
         form.addRow(self.applyModeBtn)
 
+        self.autoExposureCheck = QCheckBox("Auto exposure")
+        self.autoExposureCheck.setChecked(True)
+        form.addRow(self.autoExposureCheck)
+
+        lighting_tip = QLabel(
+            "<span style='color:#888;'>"
+            "💡 More light = shorter auto-exposure = higher fps.<br/>"
+            "Disable for a fixed exposure (some UVC cams then drop fps)."
+            "</span>"
+        )
+        lighting_tip.setWordWrap(True)
+        form.addRow(lighting_tip)
+
         self.expSpin = QSpinBox()
         self.expSpin.setRange(1, 1_000_000)
         self.expSpin.setSuffix(" μs")
         self.expSpin.setSingleStep(100)
         self.expSpin.setValue(DEFAULT_EXPOSURE_US)
+        self.expSpin.setEnabled(False)  # gated by auto-exposure checkbox
         form.addRow("Exposure", self.expSpin)
 
         self.fpsSpin = QDoubleSpinBox()
@@ -84,18 +113,78 @@ class CameraControlsDock(QDockWidget):
         btns.addWidget(self.resetRoiBtn)
         form.addRow(btns)
 
+        # ─── FPS test ─────────────────────────────────────────────
+        self.testFpsBtn = QPushButton("📊 Test framerate (3 s)")
+        form.addRow(self.testFpsBtn)
+        self.fpsResultLabel = QLabel("")
+        self.fpsResultLabel.setStyleSheet("color: #555; font-family: monospace;")
+        form.addRow(self.fpsResultLabel)
+
         self.setWidget(widget)
 
         self._pending_size:   tuple[int, int] | None = None
         self._pending_offset: tuple[int, int]        = (0, 0)
         self._capabilities: CameraCapabilities | None = None
 
-        self.expSpin.valueChanged.connect(self.exposureChanged.emit)
-        self.fpsSpin.valueChanged.connect(self.fpsChanged.emit)
-        self.gainSpin.valueChanged.connect(self.gainChanged.emit)
+        # Debounced emission for the live setters — prevents an ioctl
+        # flood (and the resulting black/bright flicker) when the user
+        # scrolls a spinbox rapidly.
+        self._exp_timer  = self._make_debounce(
+            lambda: self.exposureChanged.emit(self.expSpin.value())
+        )
+        self._fps_timer  = self._make_debounce(
+            lambda: self.fpsChanged.emit(self.fpsSpin.value())
+        )
+        self._gain_timer = self._make_debounce(
+            lambda: self.gainChanged.emit(self.gainSpin.value())
+        )
+        self.expSpin.valueChanged.connect(lambda _=0: self._exp_timer.start())
+        self.expSpin.editingFinished.connect(self._exp_timer.stop)
+        self.expSpin.editingFinished.connect(
+            lambda: self.exposureChanged.emit(self.expSpin.value())
+        )
+        self.fpsSpin.valueChanged.connect(lambda _=0: self._fps_timer.start())
+        self.fpsSpin.editingFinished.connect(self._fps_timer.stop)
+        self.fpsSpin.editingFinished.connect(
+            lambda: self.fpsChanged.emit(self.fpsSpin.value())
+        )
+        self.gainSpin.valueChanged.connect(lambda _=0: self._gain_timer.start())
+        self.gainSpin.editingFinished.connect(self._gain_timer.stop)
+        self.gainSpin.editingFinished.connect(
+            lambda: self.gainChanged.emit(self.gainSpin.value())
+        )
+
+        self.autoExposureCheck.toggled.connect(self.expSpin.setDisabled)
+        self.autoExposureCheck.toggled.connect(self.autoExposureChanged.emit)
         self.applyRoiBtn.clicked.connect(self._on_apply_roi)
         self.resetRoiBtn.clicked.connect(self._on_reset_roi)
         self.applyModeBtn.clicked.connect(self._on_apply_mode)
+        self.switchCameraBtn.clicked.connect(self.switchCameraRequested.emit)
+        self.testFpsBtn.clicked.connect(self._on_test_fps_pressed)
+
+    def set_camera_label(self, backend: str, identifier: str) -> None:
+        if backend == "fake":
+            self.cameraLabel.setText("camera: FAKE")
+        elif identifier:
+            self.cameraLabel.setText(f"camera: {backend}:{identifier}")
+        else:
+            self.cameraLabel.setText(f"camera: {backend}")
+
+    def show_fps_test_result(self, fps: float) -> None:
+        self.fpsResultLabel.setText(f"last test: {fps:.1f} fps")
+        self.testFpsBtn.setEnabled(True)
+
+    def _on_test_fps_pressed(self) -> None:
+        self.testFpsBtn.setEnabled(False)
+        self.fpsResultLabel.setText("testing… (3 s)")
+        self.fpsTestRequested.emit()
+
+    def _make_debounce(self, slot) -> QTimer:
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.setInterval(self._DEBOUNCE_MS)
+        t.timeout.connect(slot)
+        return t
 
     # ─── slots ────────────────────────────────────────────────────
     @pyqtSlot(int, int, int, int)
@@ -153,6 +242,10 @@ class CameraControlsDock(QDockWidget):
             spin.blockSignals(True)
             spin.setValue(val)
             spin.blockSignals(False)
+        self.autoExposureCheck.blockSignals(True)
+        self.autoExposureCheck.setChecked(cfg.auto_exposure)
+        self.expSpin.setEnabled(not cfg.auto_exposure)
+        self.autoExposureCheck.blockSignals(False)
         if cfg.roi_size is not None:
             w, h = cfg.roi_size
             x, y = cfg.roi_offset
@@ -171,12 +264,13 @@ class CameraControlsDock(QDockWidget):
     def to_config_fields(self) -> dict:
         """Return current control values as a kwargs dict for CameraConfig."""
         return {
-            "exposure_us": self.expSpin.value(),
-            "fps":         self.fpsSpin.value(),
-            "gain_db":     self.gainSpin.value(),
-            "roi_size":    self._pending_size,
-            "roi_offset":  self._pending_offset,
-            "video_mode":  self.modeCombo.currentData(),
+            "exposure_us":   self.expSpin.value(),
+            "fps":           self.fpsSpin.value(),
+            "gain_db":       self.gainSpin.value(),
+            "auto_exposure": self.autoExposureCheck.isChecked(),
+            "roi_size":      self._pending_size,
+            "roi_offset":    self._pending_offset,
+            "video_mode":    self.modeCombo.currentData(),
         }
 
     # ─── private ──────────────────────────────────────────────────
