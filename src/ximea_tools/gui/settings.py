@@ -45,12 +45,13 @@ class Settings:
 # └────────────────────────────────────────────────────────────┘
 def _camera_to_dict(c: CameraConfig) -> dict:
     d: dict = {
-        "exposure_us":  int(c.exposure_us),
-        "fps":          float(c.fps),
-        "gain_db":      float(c.gain_db),
-        "roi_offset":   list(c.roi_offset),
-        "trigger_mode": str(c.trigger_mode),
-        "gpi_port":     int(c.gpi_port),
+        "exposure_us":   int(c.exposure_us),
+        "fps":           float(c.fps),
+        "gain_db":       float(c.gain_db),
+        "auto_exposure": bool(c.auto_exposure),
+        "roi_offset":    list(c.roi_offset),
+        "trigger_mode":  str(c.trigger_mode),
+        "gpi_port":      int(c.gpi_port),
     }
     if c.roi_size is not None:
         d["roi_size"] = list(c.roi_size)
@@ -68,6 +69,7 @@ def _camera_from_dict(d: dict) -> CameraConfig:
         exposure_us=int(d.get("exposure_us", DEFAULT_EXPOSURE_US)),
         fps=float(d.get("fps", DEFAULT_FPS)),
         gain_db=float(d.get("gain_db", DEFAULT_GAIN_DB)),
+        auto_exposure=bool(d.get("auto_exposure", True)),
         roi_size=tuple(raw_size) if raw_size else None,
         roi_offset=tuple(d.get("roi_offset", DEFAULT_ROI_OFFSET)),
         video_mode=tuple(raw_mode) if raw_mode else None,
