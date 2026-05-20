@@ -48,6 +48,7 @@ class CameraWorker(QObject):
     recordingStateChanged = pyqtSignal(bool, str)  # (is_recording, video_path)
     capabilitiesReady = pyqtSignal(object)         # CameraCapabilities
     ringBufferStateChanged = pyqtSignal(str, int, int)  # (state, fill, total)
+    measuredFpsChanged = pyqtSignal(float)         # smoothed actual fps
 
     def __init__(
         self,
@@ -75,6 +76,12 @@ class CameraWorker(QObject):
         self._ring: RingBuffer | None = None
         self._ring_cfg: RecordingConfig | None = None
         self._ring_last_emit = 0
+        # Measured fps (EMA of inter-frame delta)
+        self._measured_fps = 0.0
+        self._fps_samples = 0
+        self._last_grab_t: float | None = None
+        self._FPS_ALPHA = 0.1
+        self._FPS_RELIABLE_AFTER = 20  # samples
 
     # ─── lifecycle ───────────────────────────────────────────────
     @pyqtSlot()
@@ -161,11 +168,18 @@ class CameraWorker(QObject):
         video_path = rec_cfg.output_dir / f"{stem}.mp4"
         meta_path  = rec_cfg.output_dir / f"{stem}.frames.csv"
 
+        writer_fps = self._effective_fps()
+        if abs(writer_fps - self._config.fps) > self._config.fps * 0.2:
+            log.warning(
+                "Measured fps %.2f deviates from configured %.2f — "
+                "writing MP4 at measured rate",
+                writer_fps, self._config.fps,
+            )
         writer: Mp4Writer | None = None
         csv_file: TextIO | None = None
         try:
             writer = Mp4Writer(
-                video_path, self._config.fps, self._camera.frame_shape,
+                video_path, writer_fps, self._camera.frame_shape,
                 queue_size=rec_cfg.queue_size,
                 monochrome=rec_cfg.monochrome,
             )
@@ -215,7 +229,7 @@ class CameraWorker(QObject):
             self._ring = RingBuffer(
                 pre_seconds=rec_cfg.ring_pre_seconds,
                 post_seconds=rec_cfg.ring_post_seconds,
-                fps=self._config.fps,
+                fps=self._effective_fps(),
                 frame_shape=shape,
                 bytes_per_pix=bpp,
                 max_ram_mb=rec_cfg.ring_max_ram_mb,
@@ -283,7 +297,7 @@ class CameraWorker(QObject):
         )
         try:
             with Mp4Writer(
-                video_path, self._config.fps, shape,
+                video_path, self._effective_fps(), shape,
                 queue_size=rcfg.queue_size, monochrome=rcfg.monochrome,
             ) as writer, meta_path.open("w", newline="") as meta_f:
                 csv_writer = csv.writer(meta_f)
@@ -344,6 +358,36 @@ class CameraWorker(QObject):
             log.debug("__exit__ during teardown: %s", e)
         self._camera = None
 
+    # ─── effective fps ───────────────────────────────────────────
+    @property
+    def measured_fps(self) -> float:
+        return self._measured_fps
+
+    def _effective_fps(self) -> float:
+        """Best estimate of fps for writers and frame budgets."""
+        if (self._fps_samples >= self._FPS_RELIABLE_AFTER
+                and self._measured_fps > 0.5):
+            return self._measured_fps
+        return self._config.fps
+
+    def _update_measured_fps(self, ts_host_s: float) -> None:
+        if self._last_grab_t is not None:
+            dt = ts_host_s - self._last_grab_t
+            if dt > 0:
+                inst = 1.0 / dt
+                if self._measured_fps <= 0:
+                    self._measured_fps = inst
+                else:
+                    self._measured_fps = (
+                        (1 - self._FPS_ALPHA) * self._measured_fps
+                        + self._FPS_ALPHA * inst
+                    )
+                self._fps_samples += 1
+                # Emit at most a few times per second.
+                if self._fps_samples % 10 == 0:
+                    self.measuredFpsChanged.emit(self._measured_fps)
+        self._last_grab_t = ts_host_s
+
     @pyqtSlot()
     def _grab_one(self) -> None:
         if not self._running:
@@ -359,6 +403,7 @@ class CameraWorker(QObject):
             self.error.emit(f"Grab failed: {e}")
             self._running = False
             return
+        self._update_measured_fps(meta.ts_host_s)
         if self._recording and self._writer is not None:
             self._writer.submit(frame)
             self._csv_writer.writerow(
