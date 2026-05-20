@@ -106,9 +106,6 @@ class MainWindow(QMainWindow):
         self._wire_signals()
         self._start_worker()
 
-        self._fps_alpha = 0.1
-        self._fps_value = 0.0
-        self._last_frame_t: float | None = None
         self._frame_context_sent = False
 
     # ─── setup ────────────────────────────────────────────────────
@@ -148,6 +145,7 @@ class MainWindow(QMainWindow):
         self.worker.statusChanged.connect(self._on_record_status)
         self.worker.recordingStateChanged.connect(self.recording.on_recording_state_changed)
         self.worker.capabilitiesReady.connect(self.controls.apply_capabilities)
+        self.worker.measuredFpsChanged.connect(self._on_measured_fps)
         self.worker.error.connect(self._on_error)
         self.worker.stopped.connect(self.thread.quit)
 
@@ -209,14 +207,20 @@ class MainWindow(QMainWindow):
         if not self._frame_context_sent:
             self.recording.update_frame_context(frame.shape[:2], self._settings.camera.fps)
             self._frame_context_sent = True
-        now = time.time()
-        if self._last_frame_t is not None:
-            dt = now - self._last_frame_t
-            if dt > 0:
-                inst = 1.0 / dt
-                self._fps_value = (1 - self._fps_alpha) * self._fps_value + self._fps_alpha * inst
-                self.fpsLabel.setText(f"{self._fps_value:.1f} fps")
-        self._last_frame_t = now
+
+    @pyqtSlot(float)
+    def _on_measured_fps(self, fps: float) -> None:
+        """Worker reports its EMA-smoothed actual fps."""
+        cfg_fps = self._settings.camera.fps
+        warn = abs(fps - cfg_fps) > cfg_fps * 0.2
+        suffix = "  ⚠ vs cfg" if warn else ""
+        self.fpsLabel.setText(f"{fps:.1f} fps{suffix}")
+        # Feed the dock so its ring-buffer memory predictor uses reality.
+        shape: tuple[int, int] = (480, 640)
+        img = self.preview._qimage  # noqa: SLF001 — internal accessor by design
+        if img is not None:
+            shape = (img.height(), img.width())
+        self.recording.update_frame_context(shape, fps)
 
     @pyqtSlot(int, int, float)
     def _on_record_status(self, written: int, dropped: int, _elapsed_s: float) -> None:
