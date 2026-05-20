@@ -16,6 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PyQt5.QtCore import QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QDockWidget,
@@ -23,6 +24,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QToolBar,
 )
 
 from ..config import CameraConfig
@@ -83,6 +85,12 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea,  self.trigger)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.histDock)
 
+        # Tabify the right-side docks so they share a tab strip instead of
+        # stacking vertically.  Recording is the most-used → show first.
+        self.tabifyDockWidget(self.controls, self.recording)
+        self.tabifyDockWidget(self.recording, self.trigger)
+        self.recording.raise_()
+
         # status bar widgets
         self.fpsLabel    = QLabel("0.0 fps")
         self.writtenLbl  = QLabel("written: 0")
@@ -93,6 +101,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("idle")
 
         self._build_menu()
+        self._build_zoom_toolbar()
         self._apply_settings(settings)
         self._wire_signals()
         self._start_worker()
@@ -100,6 +109,7 @@ class MainWindow(QMainWindow):
         self._fps_alpha = 0.1
         self._fps_value = 0.0
         self._last_frame_t: float | None = None
+        self._frame_context_sent = False
 
     # ─── setup ────────────────────────────────────────────────────
     def _apply_settings(self, s: Settings) -> None:
@@ -121,6 +131,7 @@ class MainWindow(QMainWindow):
         self.recording.armRingBufferRequested.connect(self._armRingBufferRequested.emit)
         self.recording.triggerRingSaveRequested.connect(self._triggerRingSaveRequested.emit)
         self.recording.disarmRingBufferRequested.connect(self._disarmRingBufferRequested.emit)
+        self.recording.monochromePreviewToggled.connect(self.preview.set_monochrome)
 
     def _start_worker(self) -> None:
         self.worker = CameraWorker(
@@ -154,6 +165,27 @@ class MainWindow(QMainWindow):
 
         self.thread.start()
 
+    def _build_zoom_toolbar(self) -> None:
+        bar = QToolBar("Preview")
+        bar.setObjectName("previewToolbar")
+        self.addToolBar(Qt.TopToolBarArea, bar)
+
+        act_fit = QAction("Fit", self, triggered=self.preview.zoom_fit,
+                          shortcut=QKeySequence("0"))
+        act_in  = QAction("Zoom +", self, triggered=self.preview.zoom_in,
+                          shortcut=QKeySequence(QKeySequence.ZoomIn))
+        act_out = QAction("Zoom −", self, triggered=self.preview.zoom_out,
+                          shortcut=QKeySequence(QKeySequence.ZoomOut))
+        for pct in (50, 100, 200):
+            bar.addAction(QAction(
+                f"{pct}%", self,
+                triggered=lambda _checked=False, p=pct: self.preview.set_zoom(p / 100),
+            ))
+        bar.addSeparator()
+        bar.addAction(act_out)
+        bar.addAction(act_fit)
+        bar.addAction(act_in)
+
     def _build_menu(self) -> None:
         m_file = self.menuBar().addMenu("&File")
         m_file.addAction(QAction("Save preset as…", self, triggered=self._save_preset_as))
@@ -173,6 +205,10 @@ class MainWindow(QMainWindow):
     def _on_frame(self, frame, _meta) -> None:
         self.preview.set_frame(frame)
         self.histogram.set_frame(frame)
+        # On first frame after open, give the dock the shape/fps for predictions.
+        if not self._frame_context_sent:
+            self.recording.update_frame_context(frame.shape[:2], self._settings.camera.fps)
+            self._frame_context_sent = True
         now = time.time()
         if self._last_frame_t is not None:
             dt = now - self._last_frame_t
@@ -200,6 +236,7 @@ class MainWindow(QMainWindow):
     def _on_roi_apply(self, size, offset) -> None:
         new_cam = replace(self._settings.camera, roi_size=size, roi_offset=offset)
         self._settings = replace(self._settings, camera=new_cam)
+        self._frame_context_sent = False  # new shape pending
         self._reconfigureRequested.emit(new_cam)
 
     @pyqtSlot(str, int)
