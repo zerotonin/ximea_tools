@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QStackedWidget,
@@ -55,6 +56,8 @@ class RecordingControlsDock(QDockWidget):
     armRingBufferRequested  = pyqtSignal(object)  # RecordingConfig
     triggerRingSaveRequested = pyqtSignal()
     disarmRingBufferRequested = pyqtSignal()
+    monochromePreviewToggled = pyqtSignal(bool)
+    memoryPredictionChanged  = pyqtSignal()      # internal repaint cue
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Recording", parent)
@@ -128,7 +131,7 @@ class RecordingControlsDock(QDockWidget):
         tlayout.addRow("Duration", self.durationSpin)
         self.modeStack.addWidget(page_timed)
 
-        # Page 2: ring buffer (pre / post / RAM)
+        # Page 2: ring buffer (pre / post / RAM + memory predictor + bars)
         page_ring = QWidget()
         rlayout = QFormLayout(page_ring)
         self.preSpin = QDoubleSpinBox()
@@ -148,6 +151,21 @@ class RecordingControlsDock(QDockWidget):
         self.ramSpin.setSuffix(" MB")
         self.ramSpin.setValue(1024)
         rlayout.addRow("RAM cap", self.ramSpin)
+
+        self.memoryLabel = QLabel("memory: —")
+        self.memoryLabel.setStyleSheet("font-family: monospace; color: #555;")
+        rlayout.addRow(self.memoryLabel)
+
+        self.preBar  = QProgressBar()
+        self.preBar.setFormat("pre  %v/%m frames")
+        self.preBar.setMaximum(1)
+        rlayout.addRow(self.preBar)
+
+        self.postBar = QProgressBar()
+        self.postBar.setFormat("post %v/%m frames")
+        self.postBar.setMaximum(1)
+        rlayout.addRow(self.postBar)
+
         rlayout.addRow(QLabel(
             "<i>Arm fills a rolling buffer; Trigger captures the post-tail,<br/>"
             "then writes pre + post to disk.</i>"
@@ -190,8 +208,18 @@ class RecordingControlsDock(QDockWidget):
         self.prefixEdit.textChanged.connect(self._refresh_example)
         self.suffixEdit.textChanged.connect(self._refresh_example)
         self.modeCombo.currentIndexChanged.connect(self._on_mode_changed)
+        self.monochromeCheck.toggled.connect(self.monochromePreviewToggled.emit)
+        self.monochromeCheck.toggled.connect(self._refresh_memory_label)
+        for spin in (self.preSpin, self.postSpin, self.ramSpin):
+            spin.valueChanged.connect(self._refresh_memory_label)
+
+        # Frame shape comes from the worker once the camera is open.
+        self._frame_shape: tuple[int, int] = (480, 640)
+        self._fps: float = 30.0
+
         self._refresh_example()
         self._on_mode_changed(self.modeCombo.currentIndex())
+        self._refresh_memory_label()
 
     # ─── public slots ────────────────────────────────────────────
     @pyqtSlot(int, int, float)
@@ -229,14 +257,32 @@ class RecordingControlsDock(QDockWidget):
             pct = (fill * 100 // total) if total else 0
             self.statusLabel.setText(f"armed · buffer {fill}/{total} ({pct}%)")
             self.triggerBtn.setEnabled(True)
+            self.preBar.setMaximum(max(1, total))
+            self.preBar.setValue(min(fill, total))
+            self.postBar.setMaximum(max(1, int(self.postSpin.value() * self._fps)))
+            self.postBar.setValue(0)
         elif state == "post":
             self.statusLabel.setText("capturing post-trigger frames…")
             self.triggerBtn.setEnabled(False)
+            # `fill` here is the latest pre-fill — keep it; `total` is pre_frames.
+            self.preBar.setValue(self.preBar.maximum())
+            cap = self.postBar.maximum()
+            self.postBar.setValue(min(self.postBar.value() + 1, cap))
         elif state == "writing":
             self.statusLabel.setText("writing buffer to disk…")
             self.triggerBtn.setEnabled(False)
+            self.postBar.setValue(self.postBar.maximum())
         elif state == "idle":
             self.triggerBtn.setEnabled(False)
+            self.preBar.setValue(0)
+            self.postBar.setValue(0)
+
+    @pyqtSlot(tuple, float)
+    def update_frame_context(self, frame_shape: tuple, fps: float) -> None:
+        """Called by the main window once the camera is open / on reconfigure."""
+        self._frame_shape = tuple(frame_shape)
+        self._fps = float(fps)
+        self._refresh_memory_label()
 
     def load_from_config(self, cfg: RecordingConfig) -> None:
         self.dirEdit.setText(str(cfg.output_dir))
@@ -326,3 +372,37 @@ class RecordingControlsDock(QDockWidget):
         stem = build_stem(self.prefixEdit.text(), self.suffixEdit.text(),
                           ts=datetime.now())
         self.exampleLabel.setText(f"{stem}.mp4")
+
+    def _refresh_memory_label(self, *_args) -> None:
+        h, w = self._frame_shape
+        bpp = 1 if self.monochromeCheck.isChecked() else 3
+        bytes_per_frame = h * w * bpp
+        pre_frames  = int(self.preSpin.value()  * self._fps)
+        post_frames = int(self.postSpin.value() * self._fps)
+        ram_cap_mb  = self.ramSpin.value()
+        cap_frames  = max(1, int((ram_cap_mb * 1_000_000) / max(1, bytes_per_frame)))
+        effective_pre  = min(pre_frames,  cap_frames)
+        effective_post = min(post_frames, cap_frames)
+        predicted_mb = (effective_pre + effective_post) * bytes_per_frame / 1_000_000
+        clamped = " (clamped by RAM cap)" if pre_frames > effective_pre else ""
+        avail = _available_ram_mb()
+        avail_str = f"{avail} MB available" if avail >= 0 else "available unknown"
+        self.memoryLabel.setText(
+            f"memory: predicted ≈ {predicted_mb:.0f} MB / "
+            f"{avail_str}{clamped}"
+        )
+        # Update bar maxima so the user sees the budget even before arming.
+        self.preBar.setMaximum(max(1, effective_pre))
+        self.postBar.setMaximum(max(1, effective_post))
+
+
+def _available_ram_mb() -> int:
+    """Return MemAvailable in MB from /proc/meminfo, or -1 if unavailable."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return -1
