@@ -59,6 +59,46 @@ ximea-gui
 ```
 
 
+## Hitting the camera's full framerate (UVC quirks)
+
+Two Linux behaviours frequently throttle UVC webcams (we hit both with
+the Microsoft LifeCam Cinema in development):
+
+**1. Auto-exposure mode.** Forcing the camera into manual exposure
+(`V4L2_CID_EXPOSURE_AUTO = 1`) often clamps fps far below what the
+camera reports.  `ximea_tools` defaults `auto_exposure=True` for that
+reason — toggle the *Auto exposure* checkbox in the Camera dock only
+when you actually need a fixed exposure (and accept the slower fps).
+
+**2. USB autosuspend.**  Linux will park idle USB devices to save
+power; some webcams never quite wake back up to full bandwidth.  Check:
+
+```bash
+ls /sys/bus/usb/devices/*/product            # find your camera bus path
+cat /sys/bus/usb/devices/1-13/power/control   # 'auto' means it'll suspend
+```
+
+Disable temporarily (until reboot):
+
+```bash
+echo on | sudo tee /sys/bus/usb/devices/1-13/power/control
+```
+
+Persistent fix — drop a udev rule (replace VID/PID with your camera's,
+visible in `lsusb`):
+
+```bash
+sudo tee /etc/udev/rules.d/99-webcam-no-autosuspend.rules <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="0812", \
+    TEST=="power/control", ATTR{power/control}="on"
+EOF
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+
+## Citation
+
+
 ## Citation
 
 If you use this software, please cite the metadata in `CITATION.cff`. A
